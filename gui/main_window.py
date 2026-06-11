@@ -9,6 +9,7 @@ Orchestrates the three-panel layout:
 Wires up signals between all components and the inference engine.
 """
 
+import sys
 import traceback
 from pathlib import Path
 from typing import Dict, List, Optional
@@ -589,23 +590,53 @@ class MainWindow(QMainWindow):
 
     # --- Model Loading ---
 
+    def _selected_backend(self) -> str:
+        """Return "mlx" or "gguf" for the current dropdown selection."""
+        from gui.model_download_manager import get_model_info
+
+        kind, value = self._settings_panel.get_selected_model()
+        if kind == "registry":
+            info = get_model_info(value)
+            if info and info.get("backend") == "mlx":
+                return "mlx"
+        return "gguf"
+
+    def _ensure_engine(self, backend: str):
+        """Swap the engine instance to match the requested backend."""
+        from engine.mlx_engine import MlxVlmEngine
+
+        if backend == "mlx":
+            if not isinstance(self._engine, MlxVlmEngine):
+                self._engine = MlxVlmEngine()
+        else:
+            if not isinstance(self._engine, Qwen3VLEngine):
+                self._engine = Qwen3VLEngine()
+
     def _load_model(self):
-        """Load the GGUF model in a background thread."""
+        """Load the selected model (GGUF or MLX) in a background thread."""
         if self._engine.is_loaded:
             return
 
-        # Find model file
+        # Find the model file (GGUF) or folder (MLX)
         model_path = self._find_model_file()
         if not model_path:
             QMessageBox.warning(
                 self, "Model Not Found",
-                "Could not find a .gguf model file.\n\n"
-                "Expected location: parent directory of this app.\n"
-                "Please place your Qwen3-VL GGUF file there."
+                "Could not find the selected model on disk.\n\n"
+                "Download it with the ⬇ button, or use 📁 Browse to pick a "
+                "local GGUF file."
             )
             return
 
-        # Find or download mmproj (vision encoder)
+        backend = self._selected_backend()
+        self._ensure_engine(backend)
+
+        if backend == "mlx":
+            # MLX models embed the vision tower — no mmproj needed
+            self._start_model_load(model_path, None)
+            return
+
+        # GGUF: find or download mmproj (vision encoder)
         model_dir = model_path.parent
         self._settings_panel.set_model_status("Checking for vision encoder...")
 
@@ -651,7 +682,10 @@ class MainWindow(QMainWindow):
                 self._settings_panel.set_model_status("Load cancelled")
                 return
 
-        # Load in background thread
+        self._start_model_load(model_path, mmproj_path)
+
+    def _start_model_load(self, model_path: Path, mmproj_path: Optional[Path]):
+        """Kick off the background model-load thread (both backends)."""
         self._settings_panel.set_model_status("Loading model...")
         self._settings_panel.load_model_btn.setEnabled(False)
         self._set_connection_status("loading", "Loading model...")
@@ -676,9 +710,10 @@ class MainWindow(QMainWindow):
         """Handle successful model load."""
         info = self._engine.get_model_info()
         model_name = info.get('model_file', 'Model')
+        vision = info.get('mmproj_file') or "built into model (MLX)"
         self._settings_panel.set_model_status(
             f"{model_name} loaded and ready.",
-            detail=f"Vision encoder: {info['mmproj_file']}",
+            detail=f"Vision encoder: {vision}",
             is_loaded=True,
         )
         self._set_connection_status("ready", "Model ready")
@@ -748,7 +783,8 @@ class MainWindow(QMainWindow):
     def _download_model(self, model_name: str):
         """Handle a download request from the settings panel."""
         from gui.model_download_manager import (
-            get_model_info, model_file_exists, ModelDownloadWorker,
+            get_model_info, model_file_exists, mlx_model_exists,
+            ModelDownloadWorker,
         )
         from gui.config import get_hf_token
 
@@ -762,20 +798,27 @@ class MainWindow(QMainWindow):
             )
             return
 
+        is_mlx = info.get("backend") == "mlx"
+        display_name = info["folder"] if is_mlx else info["filename"]
+
         # Determine target directory (same as model search logic)
         target_dir = self._model_dir or Path(__file__).resolve().parent.parent
 
-        if model_file_exists(target_dir, info["filename"]):
+        already = (
+            mlx_model_exists(target_dir, info["folder"]) if is_mlx
+            else model_file_exists(target_dir, info["filename"])
+        )
+        if already:
             QMessageBox.information(
                 self, "Already Downloaded",
-                f"{info['filename']} already exists in:\n{target_dir}"
+                f"{display_name} already exists in:\n{target_dir}"
             )
             return
 
         # Confirm with user (file size warning)
         answer = QMessageBox.question(
             self, "Download Model",
-            f"Download {info['filename']}?\n\n"
+            f"Download {display_name}?\n\n"
             f"Size: ~{info['size_gb']:.1f} GB\n"
             f"From: {info['repo_id']}\n"
             f"To:   {target_dir}\n\n"
@@ -788,8 +831,8 @@ class MainWindow(QMainWindow):
         # Show indeterminate progress bar
         self._progress_bar.setRange(0, 0)  # indeterminate
         self._progress_bar.setVisible(True)
-        self._queue_label.setText(f"Downloading {info['filename']}...")
-        self._notify(f"Downloading {info['filename']}...", "download")
+        self._queue_label.setText(f"Downloading {display_name}...")
+        self._notify(f"Downloading {display_name}...", "download")
 
         # Show cancel button during download
         self._settings_panel.set_download_in_progress(True)
@@ -799,9 +842,10 @@ class MainWindow(QMainWindow):
         self._download_thread = QThread()
         self._download_worker = ModelDownloadWorker(
             repo_id=info["repo_id"],
-            filename=info["filename"],
+            filename=info.get("filename", ""),
             target_dir=target_dir,
             hf_token=token,
+            snapshot_folder=info["folder"] if is_mlx else None,
         )
         self._download_worker.moveToThread(self._download_thread)
 
@@ -894,7 +938,10 @@ class MainWindow(QMainWindow):
     def _refresh_model_list(self):
         """Rebuild the model dropdown from the registry, files on disk, and
         user-added custom models (issue #7)."""
-        from gui.model_download_manager import MODEL_REGISTRY
+        from gui.model_download_manager import (
+            MODEL_REGISTRY, MLX_MODEL_REGISTRY, mlx_model_exists,
+            mlx_backend_supported,
+        )
         from gui.config import get_custom_models
 
         search_dirs = self._model_search_dirs()
@@ -908,6 +955,12 @@ class MainWindow(QMainWindow):
                 if (d / info["filename"]).is_file():
                     downloaded.add(name)
                     break
+        if mlx_backend_supported():
+            for name, info in MLX_MODEL_REGISTRY.items():
+                for d in search_dirs:
+                    if mlx_model_exists(d, info["folder"]):
+                        downloaded.add(name)
+                        break
 
         # Local models: user-added paths (anywhere on disk) plus unknown
         # GGUF files found in the search dirs
@@ -973,8 +1026,8 @@ class MainWindow(QMainWindow):
         self._notify(f"Added local model: {path.name}", "success")
 
     def _find_model_file(self) -> Optional[Path]:
-        """Resolve the GGUF file for the current dropdown selection."""
-        from gui.model_download_manager import get_model_info
+        """Resolve the model file (GGUF) or folder (MLX) for the selection."""
+        from gui.model_download_manager import get_model_info, mlx_model_exists
 
         kind, value = self._settings_panel.get_selected_model()
 
@@ -983,6 +1036,14 @@ class MainWindow(QMainWindow):
             return path if path.is_file() else None
 
         model_info = get_model_info(value)
+
+        # MLX models live in folders, not single files
+        if model_info and model_info.get("backend") == "mlx":
+            for dir_path in self._model_search_dirs():
+                if mlx_model_exists(dir_path, model_info["folder"]):
+                    return dir_path / model_info["folder"]
+            return None
+
         target_filename = model_info["filename"] if model_info else None
         search_dirs = self._model_search_dirs()
 
@@ -1374,6 +1435,36 @@ class MainWindow(QMainWindow):
                 )
                 return
             except Exception:
+                pass
+
+        # macOS: Apple Silicon shares unified memory between CPU and GPU,
+        # so show system memory pressure instead of a CUDA VRAM readout.
+        if sys.platform == "darwin":
+            try:
+                import psutil
+                mem = psutil.virtual_memory()
+                used_gb = (mem.total - mem.available) / (1024 ** 3)
+                total_gb = mem.total / (1024 ** 3)
+                pct = int(mem.percent)
+
+                self._gpu_label.setText(f"MEM: {pct}%")
+                self._vram_label.setText(f"{used_gb:.1f}/{total_gb:.0f}GB UNIFIED")
+
+                if pct >= 90:
+                    color = COLORS["error"]
+                elif pct >= 70:
+                    color = COLORS["warning"]
+                else:
+                    color = COLORS["success"]
+                self._gpu_dot.setStyleSheet(
+                    f"color: {color}; font-size: 14px; background: transparent;"
+                )
+                self._gpu_label.setStyleSheet(
+                    f"color: {color}; font-size: 10px; font-weight: 600; "
+                    f"letter-spacing: 0.5px; text-transform: uppercase; background: transparent;"
+                )
+                return
+            except ImportError:
                 pass
 
         self._gpu_label.setText("GPU: Active")

@@ -2,15 +2,30 @@
   <img src="assets/VL_GGUF_Captioner GUI Screenshot 2.png" alt="QWEN 3 VL ABL Captioner" width="900"/>
 </p>
 
-<h1 align="center">QWEN 3 VL ABL Captioner V1.3.0 — GGUF Engine</h1>
+<h1 align="center">QWEN 3 VL ABL Captioner V1.4.0 — GGUF + MLX Engines</h1>
 <h3 align="center">Professional GPU-Accelerated Image Captioning for Datasets</h3>
 
 <p align="center">
-  <img src="https://img.shields.io/badge/version-1.3.0-blue" alt="Version"/>
+  <img src="https://img.shields.io/badge/version-1.4.0-blue" alt="Version"/>
   <img src="https://img.shields.io/badge/python-3.12-blue?logo=python" alt="Python"/>
   <img src="https://img.shields.io/badge/GPU-CUDA%2012.4%E2%80%9313.x-green?logo=nvidia" alt="CUDA"/>
-  <img src="https://img.shields.io/badge/platform-Windows-lightgrey?logo=windows" alt="Platform"/>
+  <img src="https://img.shields.io/badge/Apple%20Silicon-Metal%20%2B%20MLX-black?logo=apple" alt="Apple Silicon"/>
+  <img src="https://img.shields.io/badge/platform-Windows%20%7C%20macOS-lightgrey" alt="Platform"/>
 </p>
+
+---
+
+## 🚀 What's New in V1.4.0 — macOS Support
+
+The captioner now runs natively on Macs, with **two** GPU backends:
+
+### 🍎 Apple Silicon: Metal + MLX
+- **llama.cpp Metal engine** — the same GGUF models (including the abliterated default) now run GPU-accelerated on M-series chips. Verified end-to-end on Apple Silicon: ~7s per caption on the Q2_K quant.
+- **New MLX engine** — Apple's [MLX](https://github.com/ml-explore/mlx) framework via `mlx-vlm`, typically the fastest option on M-series chips. MLX models (4/6/8-bit) appear in the model dropdown on Apple Silicon and download with one click — no mmproj file needed, the vision tower is built in.
+- **One-command setup** — `./setup.sh` installs everything: Python, the Metal wheel, and the MLX backend.
+- The hardware pill shows **unified memory** pressure on Macs instead of CUDA VRAM.
+
+> **Note:** the MLX entries use the standard Qwen3-VL-8B-Instruct weights — no MLX conversion of the abliterated variant has been published yet. The abliterated model is still available on Macs through the GGUF/Metal engine.
 
 ---
 
@@ -129,6 +144,21 @@ Double-click **`diagnose.bat`** — it prints a full report of what's wrong and 
 
 ---
 
+## 🍎 Quick Start (macOS)
+
+```bash
+git clone https://github.com/GitDonkeyHubbed/qwen3vl-captioner.git
+cd qwen3vl-captioner
+./setup.sh     # installs Python, Metal engine, and MLX backend
+./run.sh       # launch the app
+```
+
+- **Apple Silicon (M1–M5):** GGUF models run GPU-accelerated via Metal, and MLX models (usually faster) appear in the model dropdown automatically. 16 GB+ unified memory recommended for the 8B models.
+- **Intel Macs:** CPU-only (llama.cpp is built from source during setup; MLX is unavailable). Workable, but slow — Apple Silicon is strongly recommended.
+- **Diagnostics:** `.venv/bin/python doctor.py` prints the same style of install report as `diagnose.bat` on Windows.
+
+---
+
 ## 📁 Project Structure
 
 ```
@@ -141,10 +171,15 @@ qwen3vl-captioner/
 ├── requirements.txt        # Python dependencies
 ├── pyproject.toml          # Project metadata
 │
-├── engine/                 # Inference backend
+├── setup.sh                # Automated installer (macOS)
+├── run.sh                  # Launch script (macOS)
+│
+├── engine/                 # Inference backends
 │   ├── __init__.py
+│   ├── base.py             # Shared engine interface + caption cleanup
 │   ├── cuda_setup.py       # CUDA toolkit detection, DLL loading, diagnostics
-│   ├── inference.py        # Qwen3VLEngine — GGUF model loading & captioning
+│   ├── inference.py        # Qwen3VLEngine — GGUF via llama.cpp (CUDA/Metal)
+│   ├── mlx_engine.py       # MlxVlmEngine — MLX via mlx-vlm (Apple Silicon)
 │   └── model_downloader.py # HuggingFace model download manager
 │
 ├── gui/                    # PyQt6 user interface
@@ -232,25 +267,22 @@ pip install llama_cpp_python-0.3.24+cu124.basic-cp312-cp312-win_amd64.whl
 python app.py
 ```
 
-### Linux / macOS (Experimental)
+### Linux (Experimental)
 
-The GUI is cross-platform (PyQt6) but the setup scripts are Windows-only. For other platforms:
+The GUI is cross-platform (PyQt6); macOS has first-class support via `./setup.sh`. For Linux:
 
 ```bash
 python3 -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.txt
 
-# For CUDA on Linux:
-CMAKE_ARGS="-DGGML_CUDA=on" pip install llama-cpp-python
-
-# For Metal on macOS:
-CMAKE_ARGS="-DGGML_METAL=on" pip install llama-cpp-python
+# For CUDA on Linux (JamePeng's fork also publishes linux cu1xx wheels):
+CMAKE_ARGS="-DGGML_CUDA=on" pip install "llama_cpp_python @ git+https://github.com/JamePeng/llama-cpp-python"
 
 python app.py
 ```
 
-> **Note:** Linux/macOS support is experimental. The CUDA DLL preloading in `engine/inference.py` is Windows-specific but will be safely skipped on other platforms.
+> **Note:** Linux support is experimental. The CUDA DLL preloading in `engine/cuda_setup.py` is Windows-specific and safely skipped elsewhere.
 
 ---
 

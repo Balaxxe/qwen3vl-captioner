@@ -1,13 +1,14 @@
 """
 Installation diagnostics for Qwen3-VL Captioner.
 
-Run via diagnose.bat (Windows) or:  python doctor.py
+Run via diagnose.bat (Windows), or:  .venv/bin/python doctor.py (macOS/Linux)
 
-Prints a report of the Python / CUDA / llama-cpp-python install state with
-specific remediation steps. If you open a GitHub issue about installation
-problems, please paste this report into it.
+Prints a report of the install state with specific remediation steps.
+If you open a GitHub issue about installation problems, please paste
+this report into it.
 """
 
+import platform
 import sys
 from pathlib import Path
 
@@ -23,17 +24,25 @@ FAIL = "[FAIL]"
 INFO = "[ -- ]"
 
 
-def main() -> int:
-    print("=" * 64)
-    print("  Qwen3-VL Captioner — Install Diagnostics")
-    print("=" * 64)
+def _check_llama(report: dict, problems: list, setup_cmd: str):
+    """Shared llama-cpp-python install/import checks."""
+    if report["llama_cpp_installed"]:
+        print(f"{OK} llama-cpp-python: {report['llama_cpp_version']}")
+        if report["llama_cpp_importable"]:
+            print(f"{OK} Engine import:   llama_cpp loads successfully")
+        else:
+            print(f"{FAIL} Engine import:   {report['import_error']}")
+            problems.append(
+                f"llama_cpp failed to load. Re-run {setup_cmd}; if it persists, "
+                "open a GitHub issue with this report."
+            )
+    else:
+        print(f"{FAIL} llama-cpp-python: NOT INSTALLED")
+        problems.append(f"Run {setup_cmd} to install all dependencies")
 
-    report = diagnose()
-    problems: list[str] = []
 
-    print(f"{INFO} Platform:        {report['platform']}")
-    print(f"{INFO} Python:          {report['python']}")
-
+def _windows_checks(report: dict, problems: list):
+    """CUDA toolkit / wheel matching — the common Windows failure modes."""
     if report["gpu_name"]:
         print(f"{OK} GPU:             {report['gpu_name']} (driver {report['driver_version']})")
     else:
@@ -51,11 +60,7 @@ def main() -> int:
             "         (or https://developer.nvidia.com/cuda-downloads), then re-run setup.bat"
         )
 
-    if report["llama_cpp_installed"]:
-        print(f"{OK} llama-cpp-python: {report['llama_cpp_version']}")
-    else:
-        print(f"{FAIL} llama-cpp-python: NOT INSTALLED")
-        problems.append("Run setup.bat to install all dependencies")
+    _check_llama(report, problems, "setup.bat")
 
     wheel_tag = report["wheel_cuda_tag"]
     rec_tag = report["recommended_tag"]
@@ -72,16 +77,47 @@ def main() -> int:
     elif report["llama_cpp_installed"]:
         print(f"{WARN} Wheel build:      CPU build detected (no CUDA tag) — GPU acceleration disabled")
 
-    if report["llama_cpp_installed"]:
-        if report["llama_cpp_importable"]:
-            print(f"{OK} Engine import:   llama_cpp loads successfully")
-        else:
-            print(f"{FAIL} Engine import:   {report['import_error']}")
-            if not problems:
-                problems.append(
-                    "llama_cpp failed to load even though versions look right.\n"
-                    "         Re-run setup.bat; if it persists, open a GitHub issue with this report."
-                )
+
+def _macos_checks(report: dict, problems: list):
+    """Metal / MLX checks — no CUDA on Macs."""
+    arch = platform.machine()
+    if arch == "arm64":
+        print(f"{OK} Architecture:    Apple Silicon ({arch}) — Metal GPU acceleration available")
+    else:
+        print(f"{WARN} Architecture:    Intel ({arch}) — CPU only; MLX unavailable")
+
+    _check_llama(report, problems, "./setup.sh")
+
+    if arch == "arm64":
+        try:
+            from importlib.metadata import version
+            mlx_ver = version("mlx-vlm")
+            print(f"{OK} MLX backend:     mlx-vlm {mlx_ver} installed")
+        except Exception:
+            print(f"{WARN} MLX backend:     mlx-vlm not installed (optional — MLX models hidden)")
+            problems.append(
+                "Optional: install the MLX backend with ./setup.sh "
+                "(or: .venv/bin/pip install mlx-vlm)"
+            )
+
+
+def main() -> int:
+    print("=" * 64)
+    print("  Qwen3-VL Captioner — Install Diagnostics")
+    print("=" * 64)
+
+    report = diagnose()
+    problems: list = []
+
+    print(f"{INFO} Platform:        {report['platform']} ({platform.machine()})")
+    print(f"{INFO} Python:          {report['python']}")
+
+    if sys.platform == "win32":
+        _windows_checks(report, problems)
+    elif sys.platform == "darwin":
+        _macos_checks(report, problems)
+    else:
+        _check_llama(report, problems, "pip install (see README — Linux)")
 
     print("-" * 64)
     if problems:
@@ -89,7 +125,7 @@ def main() -> int:
         for i, p in enumerate(problems, 1):
             print(f"  {i}. {p}")
         print()
-        print("  After fixing, run diagnose.bat again to verify.")
+        print("  After fixing, run the diagnostics again to verify.")
         result = 1
     else:
         print("  All checks passed. If the app still fails, open a GitHub")

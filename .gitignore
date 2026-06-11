@@ -50,3 +50,7 @@ Desktop.ini
 
 # ─── User config (created at runtime) ────────────────────
 # ~/.vlcaptioner/ is already outside the repo
+
+# Local test scratch files
+.test-*
+*.part

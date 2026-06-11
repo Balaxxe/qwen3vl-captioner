@@ -262,7 +262,10 @@ def diagnose() -> dict:
 
     # GPU info via NVML if available (best effort)
     try:
-        import pynvml
+        import warnings
+        with warnings.catch_warnings():
+            warnings.filterwarnings("ignore", category=FutureWarning, module="pynvml")
+            import pynvml
         pynvml.nvmlInit()
         handle = pynvml.nvmlDeviceGetHandleByIndex(0)
         name = pynvml.nvmlDeviceGetName(handle)

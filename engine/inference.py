@@ -15,6 +15,7 @@ from typing import Callable, Optional
 from PIL import Image
 
 
+from engine.base import DEFAULT_SYSTEM_PROMPT, apply_prefix_suffix, clean_caption
 from engine.cuda_setup import setup_cuda_dll_path, startup_failure_advice
 
 # Setup CUDA DLL path before importing llama_cpp
@@ -167,7 +168,7 @@ class Qwen3VLEngine:
         self,
         image_path: str | Path,
         prompt: str,
-        system_prompt: str = "You are a helpful assistant that describes images accurately and in detail.",
+        system_prompt: str = DEFAULT_SYSTEM_PROMPT,
         temperature: float = 0.6,
         top_p: float = 0.9,
         max_tokens: int = 1024,
@@ -254,31 +255,9 @@ class Qwen3VLEngine:
             caption = response["choices"][0]["message"]["content"].strip()
         
         self._last_inference_time = time.perf_counter() - start_time
-        
-        # --- Clean up chat-template artifacts ---
-        # VLMs often prepend formatting noise like ":", "Answer:", "Caption:", etc.
-        # Strip known prefixes first, then any leftover leading punctuation.
-        _strip_prefixes = [
-            "answer:", "caption:", "description:", "response:",
-            "here is", "here's", "sure,", "sure.",
-        ]
-        cleaned = caption
-        for pfx in _strip_prefixes:
-            if cleaned.lower().startswith(pfx):
-                cleaned = cleaned[len(pfx):]
-                break
-        # Strip any remaining leading colons, dashes, dots, asterisks, whitespace
-        cleaned = cleaned.lstrip(":;-–—.*• \t\n")
-        if cleaned:
-            caption = cleaned
-        
-        # Apply prefix and suffix
-        if prefix:
-            caption = prefix.strip() + " " + caption
-        if suffix:
-            caption = caption + " " + suffix.strip()
-        
-        return caption
+
+        caption = clean_caption(caption)
+        return apply_prefix_suffix(caption, prefix, suffix)
     
     def unload(self) -> None:
         """Unload the model and free GPU memory."""

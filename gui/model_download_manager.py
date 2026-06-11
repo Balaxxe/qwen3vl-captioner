@@ -117,20 +117,79 @@ _MODEL_ORDER = [
     "Qwen3-VL 8B ABL — F16 (16.4 GB)",
 ]
 
+# ---------------------------------------------------------------------------
+# MLX models (Apple Silicon only) — folders of safetensors, no mmproj needed.
+# Note: these are the standard (non-abliterated) Qwen3-VL Instruct weights;
+# no MLX conversion of the abliterated variant has been published yet.
+# ---------------------------------------------------------------------------
+
+MLX_MODEL_REGISTRY: Dict[str, Dict[str, Any]] = {
+    "Qwen3-VL 8B MLX — 4bit (5.4 GB)": {
+        "repo_id": "lmstudio-community/Qwen3-VL-8B-Instruct-MLX-4bit",
+        "folder": "Qwen3-VL-8B-Instruct-MLX-4bit",
+        "size_gb": 5.38,
+        "gated": False,
+        "backend": "mlx",
+    },
+    "Qwen3-VL 8B MLX — 6bit (7.3 GB)": {
+        "repo_id": "lmstudio-community/Qwen3-VL-8B-Instruct-MLX-6bit",
+        "folder": "Qwen3-VL-8B-Instruct-MLX-6bit",
+        "size_gb": 7.29,
+        "gated": False,
+        "backend": "mlx",
+    },
+    "Qwen3-VL 8B MLX — 8bit (9.2 GB)": {
+        "repo_id": "lmstudio-community/Qwen3-VL-8B-Instruct-MLX-8bit",
+        "folder": "Qwen3-VL-8B-Instruct-MLX-8bit",
+        "size_gb": 9.19,
+        "gated": False,
+        "backend": "mlx",
+    },
+}
+
+_MLX_MODEL_ORDER = list(MLX_MODEL_REGISTRY.keys())
+
+
+def mlx_backend_supported() -> bool:
+    """MLX models only make sense on Apple Silicon Macs."""
+    import platform
+    import sys
+    return sys.platform == "darwin" and platform.machine() == "arm64"
+
 
 def get_all_model_display_names() -> List[str]:
-    """Return the ordered list of model display names for the dropdown combo."""
-    return list(_MODEL_ORDER)
+    """Return the ordered list of model display names for the dropdown combo.
+
+    MLX entries are only offered on Apple Silicon, where they can run."""
+    names = list(_MODEL_ORDER)
+    if mlx_backend_supported():
+        names.extend(_MLX_MODEL_ORDER)
+    return names
 
 
 def get_model_info(combo_text: str) -> Optional[Dict[str, Any]]:
-    """Return registry entry for *combo_text*, or None if not downloadable."""
-    return MODEL_REGISTRY.get(combo_text)
+    """Return registry entry for *combo_text*, or None if not downloadable.
+
+    Entries carry a "backend" key: "gguf" (default) or "mlx"."""
+    info = MODEL_REGISTRY.get(combo_text)
+    if info is not None:
+        return {**info, "backend": "gguf"}
+    return MLX_MODEL_REGISTRY.get(combo_text)
 
 
 def model_file_exists(model_dir: Path, filename: str) -> bool:
     """Check whether *filename* already exists in *model_dir*."""
     return (model_dir / filename).is_file()
+
+
+def mlx_model_exists(model_dir: Path, folder: str) -> bool:
+    """Check whether an MLX model folder is present and complete-looking."""
+    path = model_dir / folder
+    return (
+        path.is_dir()
+        and (path / "config.json").is_file()
+        and any(path.glob("*.safetensors"))
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -179,17 +238,52 @@ class ModelDownloadWorker(QObject):
         filename: str,
         target_dir: Path,
         hf_token: str = "",
+        snapshot_folder: Optional[str] = None,
     ):
         super().__init__()
         self.repo_id = repo_id
         self.filename = filename
         self.target_dir = target_dir
         self.hf_token = hf_token or None
+        # When set, download the whole repo into target_dir/snapshot_folder
+        # (used for MLX models, which are folders rather than single files)
+        self.snapshot_folder = snapshot_folder
         self._cancelled = False
 
     def cancel(self):
         """Request cancellation of the download (takes effect within ~1 MiB)."""
         self._cancelled = True
+
+    def _run_snapshot(self):
+        """Download a whole model repo (MLX folder) via snapshot_download."""
+        from huggingface_hub import snapshot_download
+
+        dest = Path(self.target_dir) / self.snapshot_folder
+        try:
+            self.progress.emit(
+                f"Downloading {self.repo_id} → {self.snapshot_folder}/ "
+                "(folder download — this may take a while)...",
+                0.0,
+            )
+            local = snapshot_download(
+                self.repo_id,
+                local_dir=str(dest),
+                token=self.hf_token,
+            )
+            if self._cancelled:
+                self.error.emit("Download cancelled.")
+                return
+            self.progress.emit("Download complete", 1.0)
+            self.finished.emit(str(local))
+        except Exception as exc:
+            msg = str(exc)
+            if "401" in msg or "403" in msg:
+                msg = (
+                    f"Authentication error ({msg[:120]}).\n\n"
+                    "This model may require a HuggingFace token.\n"
+                    "Add your token in Settings (gear icon) and try again."
+                )
+            self.error.emit(msg)
 
     def run(self):
         """Execute the download (call from a QThread)."""
@@ -204,6 +298,10 @@ class ModelDownloadWorker(QObject):
 
         if self._cancelled:
             self.error.emit("Download cancelled before starting.")
+            return
+
+        if self.snapshot_folder:
+            self._run_snapshot()
             return
 
         target = Path(self.target_dir) / self.filename
