@@ -254,7 +254,8 @@ def diagnose() -> dict:
     if report["llama_cpp_installed"]:
         setup_cuda_dll_path()
         try:
-            import llama_cpp  # noqa: F401
+            import importlib
+            importlib.import_module("llama_cpp")
             report["llama_cpp_importable"] = True
         except Exception as e:
             report["import_error"] = str(e)

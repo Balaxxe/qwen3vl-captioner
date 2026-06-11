@@ -15,11 +15,11 @@ snippets. Matches the Figma "VL-CAPTIONER Studio Pro" sidebar design:
 from pathlib import Path
 from typing import Dict, List, Optional
 
-from PyQt6.QtCore import Qt, pyqtSignal, QSize, QTimer, QMimeData
-from PyQt6.QtGui import QPixmap, QIcon, QFont, QPainter, QColor, QPen, QBrush, QDragEnterEvent, QDropEvent
+from PyQt6.QtCore import Qt, pyqtSignal
+from PyQt6.QtGui import QPixmap, QPainter, QColor, QPen, QDragEnterEvent, QDropEvent
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
-    QLineEdit, QScrollArea, QFrame, QFileDialog, QSizePolicy,
+    QLineEdit, QScrollArea, QFrame, QFileDialog,
 )
 
 from engine.inference import IMAGE_EXTENSIONS

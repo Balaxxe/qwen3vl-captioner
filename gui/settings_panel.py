@@ -10,11 +10,11 @@ from pathlib import Path
 from typing import Optional, Dict, List
 
 from PyQt6.QtCore import Qt, pyqtSignal, QSize
-from PyQt6.QtGui import QIcon, QPixmap, QPainter, QColor, QPen
+from PyQt6.QtGui import QIcon, QPixmap, QPainter, QColor, QPen, QBrush
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QGridLayout, QLabel, QPushButton,
     QComboBox, QSlider, QTextEdit, QLineEdit, QFrame, QScrollArea,
-    QSizePolicy, QCheckBox,
+    QCheckBox,
 )
 
 from .theme import COLORS
@@ -1047,15 +1047,28 @@ class SettingsPanel(QFrame):
 
     # ─── Model List Management ────────────────────────────
 
-    def populate_models(self, local_models: List[Path], downloaded_names: set):
+    # Rough VRAM headroom (GB) on top of model weights: mmproj, KV cache
+    # for an 8k context, and CUDA runtime overhead.
+    _VRAM_OVERHEAD_GB = 2.0
+
+    def populate_models(
+        self,
+        local_models: List[Path],
+        downloaded_names: set,
+        vram_gb: Optional[float] = None,
+    ):
         """Rebuild the model dropdown.
 
         Registry models that already exist on disk get a ✓ marker.
+        When the GPU's VRAM is known, quants that won't fit are tinted
+        red ("won't fit") or orange ("tight fit") with explanatory tooltips.
         User-added local GGUF files are listed after a separator.
         Item data is ("registry", registry_key) or ("local", absolute_path)
         so display text can change without breaking lookups.
         """
-        from gui.model_download_manager import get_all_model_display_names
+        from gui.model_download_manager import (
+            get_all_model_display_names, MODEL_REGISTRY,
+        )
 
         prev = self.model_combo.currentData()
         self.model_combo.blockSignals(True)
@@ -1064,10 +1077,37 @@ class SettingsPanel(QFrame):
         for name in get_all_model_display_names():
             display = f"✓ {name}" if name in downloaded_names else name
             self.model_combo.addItem(display, userData=("registry", name))
+            idx = self.model_combo.count() - 1
+
+            tooltips = []
             if name in downloaded_names:
-                idx = self.model_combo.count() - 1
+                tooltips.append("Already downloaded")
+
+            size_gb = MODEL_REGISTRY.get(name, {}).get("size_gb")
+            if vram_gb and size_gb:
+                needs = size_gb + self._VRAM_OVERHEAD_GB
+                if vram_gb < size_gb + 1.0:
+                    self.model_combo.setItemData(
+                        idx, QBrush(QColor(COLORS["error"])),
+                        Qt.ItemDataRole.ForegroundRole,
+                    )
+                    tooltips.append(
+                        f"Won't fit: needs ~{needs:.0f} GB VRAM, "
+                        f"your GPU has {vram_gb:.0f} GB"
+                    )
+                elif vram_gb < needs:
+                    self.model_combo.setItemData(
+                        idx, QBrush(QColor(COLORS["warning"])),
+                        Qt.ItemDataRole.ForegroundRole,
+                    )
+                    tooltips.append(
+                        f"Tight fit: needs ~{needs:.0f} GB VRAM with context, "
+                        f"your GPU has {vram_gb:.0f} GB — close other GPU apps"
+                    )
+
+            if tooltips:
                 self.model_combo.setItemData(
-                    idx, "Already downloaded", Qt.ItemDataRole.ToolTipRole
+                    idx, "\n".join(tooltips), Qt.ItemDataRole.ToolTipRole
                 )
 
         if local_models:
@@ -1081,7 +1121,8 @@ class SettingsPanel(QFrame):
                     idx, str(path), Qt.ItemDataRole.ToolTipRole
                 )
 
-        # Restore previous selection, else default to Q6_K (best quality/VRAM balance)
+        # Restore previous selection; else pick the largest quant that fits
+        # comfortably in VRAM; else fall back to Q6_K.
         restored = False
         if prev is not None:
             for i in range(self.model_combo.count()):
@@ -1089,6 +1130,26 @@ class SettingsPanel(QFrame):
                     self.model_combo.setCurrentIndex(i)
                     restored = True
                     break
+        if not restored and vram_gb:
+            best_idx, best_size = -1, -1.0
+            for i in range(self.model_combo.count()):
+                data = self.model_combo.itemData(i)
+                if not data or data[0] != "registry":
+                    continue
+                # F16 is excluded from auto-selection: Q8_0 is visually
+                # indistinguishable for captioning and far faster
+                if "F16" in data[1]:
+                    continue
+                size_gb = MODEL_REGISTRY.get(data[1], {}).get("size_gb")
+                if (
+                    size_gb
+                    and size_gb + self._VRAM_OVERHEAD_GB <= vram_gb
+                    and size_gb > best_size
+                ):
+                    best_idx, best_size = i, size_gb
+            if best_idx >= 0:
+                self.model_combo.setCurrentIndex(best_idx)
+                restored = True
         if not restored:
             for i in range(self.model_combo.count()):
                 data = self.model_combo.itemData(i)

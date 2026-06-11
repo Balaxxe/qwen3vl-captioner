@@ -9,13 +9,11 @@ Orchestrates the three-panel layout:
 Wires up signals between all components and the inference engine.
 """
 
-import sys
 import traceback
 from pathlib import Path
 from typing import Dict, List, Optional
 
 from PyQt6.QtCore import Qt, QThread, pyqtSignal, QObject, QTimer
-from PyQt6.QtGui import QFont, QAction, QPainter, QColor, QPen, QBrush, QScreen
 from PyQt6.QtWidgets import (
     QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
     QFrame, QSplitter, QStatusBar, QProgressBar, QApplication, QFileDialog,
@@ -29,7 +27,7 @@ from gui.settings_panel import SettingsPanel
 from gui.dataset_panel import DatasetPanel
 from gui.notification_panel import NotificationStore, NotificationPanel
 from gui.theme import COLORS
-from engine.inference import Qwen3VLEngine, is_image_file
+from engine.inference import Qwen3VLEngine
 from engine.model_downloader import ensure_mmproj, find_mmproj_file
 
 
@@ -692,7 +690,7 @@ class MainWindow(QMainWindow):
 
     def _on_model_load_error(self, error: str):
         """Handle model load failure."""
-        self._settings_panel.set_model_status(f"Error loading model", detail=error[:100])
+        self._settings_panel.set_model_status("Error loading model", detail=error[:100])
         self._settings_panel.load_model_btn.setEnabled(True)
         self._set_connection_status("error", "Error")
         self._notify(f"Model load failed: {error[:80]}", "error")
@@ -819,6 +817,11 @@ class MainWindow(QMainWindow):
     def _on_download_progress(self, message: str, fraction: float):
         """Handle download progress updates."""
         self._queue_label.setText(message)
+        if 0.0 < fraction <= 1.0:
+            # Switch from indeterminate to a real percentage bar
+            if self._progress_bar.maximum() == 0:
+                self._progress_bar.setRange(0, 100)
+            self._progress_bar.setValue(int(fraction * 100))
 
     def _on_download_finished(self, local_path: str):
         """Handle successful download."""
@@ -933,7 +936,16 @@ class MainWindow(QMainWindow):
                     seen_local.add(f.resolve())
                     local_paths.append(f)
 
-        self._settings_panel.populate_models(local_paths, downloaded)
+        # Total GPU VRAM (GB) so the dropdown can flag quants that won't fit
+        vram_gb = None
+        if self._nvml_handle is not None and self._pynvml is not None:
+            try:
+                mem_info = self._pynvml.nvmlDeviceGetMemoryInfo(self._nvml_handle)
+                vram_gb = mem_info.total / (1024 ** 3)
+            except Exception:
+                pass
+
+        self._settings_panel.populate_models(local_paths, downloaded, vram_gb)
 
     def _browse_for_model(self):
         """Let the user pick any GGUF model file from disk (issue #7)."""
@@ -1161,14 +1173,7 @@ class MainWindow(QMainWindow):
             "generating": COLORS["warning"],
             "error": COLORS["error"],
         }
-        icon_map = {
-            "ready": "\u2022",       # ●
-            "loading": "\u23F3",     # ⏳
-            "generating": "\u26A1",  # ⚡
-            "error": "\u2022",       # ●
-        }
         color = color_map.get(state, COLORS["text_dim"])
-        icon = icon_map.get(state, "\u2022")
 
         self._conn_dot.setStyleSheet(f"color: {color}; font-size: 12px; padding-right: 4px; background: transparent;")
         self._conn_label.setText(text)

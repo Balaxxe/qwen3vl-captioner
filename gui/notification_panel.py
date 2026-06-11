@@ -7,15 +7,14 @@ Provides:
   - NotificationPanel: Popup QFrame dropdown anchored below the bell button
 """
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from datetime import datetime
 from typing import List
 
 from PyQt6.QtCore import Qt, pyqtSignal, QObject, QPoint
-from PyQt6.QtGui import QFont
 from PyQt6.QtWidgets import (
     QFrame, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
-    QScrollArea, QWidget, QSizePolicy, QGraphicsDropShadowEffect,
+    QScrollArea, QWidget, QGraphicsDropShadowEffect,
 )
 
 from gui.theme import COLORS

@@ -9,8 +9,8 @@ Figma "VL-CAPTIONER Studio Pro" CaptionWorkspace design.
 from pathlib import Path
 from typing import Optional
 
-from PyQt6.QtCore import Qt, QSize, QTimer, pyqtSignal
-from PyQt6.QtGui import QPixmap, QImage, QWheelEvent, QPainter, QColor, QPen, QFont
+from PyQt6.QtCore import Qt, QTimer
+from PyQt6.QtGui import QPixmap, QWheelEvent, QPainter, QColor, QPen
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
     QFrame, QSizePolicy, QScrollArea,

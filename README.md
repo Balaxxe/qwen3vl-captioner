@@ -28,6 +28,8 @@
 - If no mmproj is found next to a custom model, the app asks whether to download the default or lets you **browse for the matching mmproj**.
 
 ### ✨ Quality of life
+- **Real download progress** — model downloads show actual percentage and GB progress, **Cancel works mid-download**, and interrupted downloads **resume where they left off**.
+- **VRAM-aware model list** — quants that won't fit your GPU are tinted red ("won't fit") or orange ("tight fit") with tooltips, and the default selection is the best quant for your card.
 - **✓ markers** in the model dropdown show which models are already downloaded.
 - **Auto-save captions** checkbox — saves every caption as a `.txt` sidecar instantly, no more popup per image.
 - **Max tokens** raised to 2048.

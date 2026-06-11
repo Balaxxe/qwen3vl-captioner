@@ -9,7 +9,6 @@ generation parameters. Thread-safe for Qt signal integration.
 import base64
 import io
 import time
-import traceback
 from pathlib import Path
 from typing import Callable, Optional
 

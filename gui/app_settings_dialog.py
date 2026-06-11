@@ -10,7 +10,7 @@ Provides:
 from PyQt6.QtCore import Qt, pyqtSignal
 from PyQt6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
-    QLineEdit, QCheckBox, QFrame, QWidget,
+    QLineEdit, QCheckBox, QFrame,
 )
 
 from gui.config import load_config, save_config
