@@ -8,8 +8,6 @@ generation parameters. Thread-safe for Qt signal integration.
 
 import base64
 import io
-import os
-import sys
 import time
 import traceback
 from pathlib import Path
@@ -18,70 +16,21 @@ from typing import Callable, Optional
 from PIL import Image
 
 
-def _setup_cuda_dll_path():
-    """
-    Manually preload CUDA DLLs using ctypes before llama.cpp initialization.
-
-    On Windows, llama-cpp-python with CUDA support requires CUDA runtime DLLs
-    (cudart64_12.dll, cublas64_12.dll, etc.) to be loaded. When launching
-    the GUI via double-click, the CUDA bin directory may not be in PATH, causing
-    "access violation reading 0x0000000000000000" errors during llama_backend_init().
-
-    We manually preload the DLLs using ctypes.CDLL() to ensure they're loaded
-    into the process before llama.cpp tries to use them.
-    """
-    if sys.platform != "win32":
-        return  # Only needed on Windows
-
-    # Common CUDA installation paths to check
-    cuda_paths = [
-        Path(r"C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v12.4\bin"),
-        Path(r"C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v12.1\bin"),
-        Path(r"C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v12.0\bin"),
-    ]
-
-    # Also check CUDA_PATH environment variable
-    cuda_env = os.environ.get("CUDA_PATH")
-    if cuda_env:
-        cuda_paths.insert(0, Path(cuda_env) / "bin")
-
-    # Find first existing CUDA path
-    cuda_bin = None
-    for path in cuda_paths:
-        if path.exists():
-            cuda_bin = path
-            break
-
-    if not cuda_bin:
-        return  # No CUDA found, will fall back to CPU
-
-    # Critical CUDA DLLs that must be preloaded
-    critical_dlls = [
-        "cudart64_12.dll",
-        "cublas64_12.dll",
-        "cublasLt64_12.dll",
-    ]
-
-    # Preload DLLs using ctypes
-    import ctypes
-    for dll_name in critical_dlls:
-        dll_path = cuda_bin / dll_name
-        if dll_path.exists():
-            try:
-                ctypes.CDLL(str(dll_path))
-            except Exception:
-                pass  # Continue even if one DLL fails
-
+from engine.cuda_setup import setup_cuda_dll_path, startup_failure_advice
 
 # Setup CUDA DLL path before importing llama_cpp
-_setup_cuda_dll_path()
+setup_cuda_dll_path()
 
+# A failed DLL load raises RuntimeError (not ImportError), so catch broadly
+# and keep the error text — the GUI uses it to show actionable advice.
+LLAMA_CPP_IMPORT_ERROR: Optional[str] = None
 try:
     from llama_cpp import Llama
     from llama_cpp.llama_chat_format import Qwen25VLChatHandler
     LLAMA_CPP_AVAILABLE = True
-except ImportError:
+except Exception as _e:
     LLAMA_CPP_AVAILABLE = False
+    LLAMA_CPP_IMPORT_ERROR = str(_e)
 
 
 # Supported image file extensions
@@ -172,8 +121,7 @@ class Qwen3VLEngine:
         """
         if not LLAMA_CPP_AVAILABLE:
             raise RuntimeError(
-                "llama-cpp-python is not installed. Run setup.bat or:\n"
-                "  pip install llama-cpp-python"
+                startup_failure_advice(LLAMA_CPP_IMPORT_ERROR or "llama-cpp-python is not installed")
             )
         
         model_path = Path(model_path)

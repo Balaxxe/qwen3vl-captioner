@@ -112,7 +112,8 @@ class MainWindow(QMainWindow):
 
     def __init__(self, model_dir: Optional[Path] = None):
         super().__init__()
-        self.setWindowTitle("QWEN 3 VL ABL Captioner V1.2.0 — GGUF Engine")
+        from gui.version import APP_VERSION
+        self.setWindowTitle(f"QWEN 3 VL ABL Captioner V{APP_VERSION} — GGUF Engine")
         self.setMinimumSize(1000, 650)
 
         # Screen-aware sizing: use 85% of available screen, clamped to minimums
@@ -209,7 +210,8 @@ class MainWindow(QMainWindow):
         )
         brand_block.addWidget(brand_title)
 
-        brand_sub = QLabel("V1.2.0")
+        from gui.version import APP_VERSION
+        brand_sub = QLabel(f"V{APP_VERSION}")
         brand_sub.setProperty("class", "brand-subtitle")
         brand_sub.setStyleSheet(
             f"color: {COLORS['text_dim']}; font-size: 9px; font-family: 'Consolas', 'Courier New', monospace; "
@@ -444,8 +446,8 @@ class MainWindow(QMainWindow):
         left_layout.addWidget(conn_dot)
         self._conn_dot = conn_dot
 
-        # Connection text
-        self._conn_label = QLabel("Connected to Local Node: 127.0.0.1:8188")
+        # Engine status text
+        self._conn_label = QLabel("Local llama.cpp engine — no model loaded")
         self._conn_label.setStyleSheet(f"color: {COLORS['text_dim']}; font-size: 10px; background: transparent;")
         left_layout.addWidget(self._conn_label)
 
@@ -526,7 +528,11 @@ class MainWindow(QMainWindow):
         self._settings_panel.export_requested.connect(self._export_all_captions)
         self._settings_panel.settings_changed.connect(self._on_settings_changed)
         self._settings_panel.download_model_requested.connect(self._download_model)
+        self._settings_panel.browse_model_requested.connect(self._browse_for_model)
         self._settings_panel.cancel_requested.connect(self._cancel_generation)
+
+        # Populate the model dropdown with what's actually on disk
+        self._refresh_model_list()
 
         # Header icon buttons
         if self._terminal_btn:
@@ -601,22 +607,51 @@ class MainWindow(QMainWindow):
             )
             return
 
-        # Find or download mmproj
+        # Find or download mmproj (vision encoder)
         model_dir = model_path.parent
         self._settings_panel.set_model_status("Checking for vision encoder...")
 
-        try:
-            mmproj_path = ensure_mmproj(
-                model_dir,
-                progress_callback=lambda msg, _: self._settings_panel.set_model_status(msg),
+        mmproj_path = find_mmproj_file(model_dir)
+        if mmproj_path is None:
+            # No mmproj next to the model. For custom models the default
+            # download may not match, so let the user choose.
+            answer = QMessageBox.question(
+                self, "Vision Encoder Needed",
+                f"No mmproj (vision encoder) .gguf found next to:\n"
+                f"{model_path.name}\n\n"
+                "Download the default Qwen3-VL 8B mmproj into that folder?\n\n"
+                "Choose No to browse for an mmproj file manually\n"
+                "(use the mmproj published alongside your model).",
+                QMessageBox.StandardButton.Yes
+                | QMessageBox.StandardButton.No
+                | QMessageBox.StandardButton.Cancel,
+                QMessageBox.StandardButton.Yes,
             )
-        except Exception as e:
-            QMessageBox.critical(
-                self, "mmproj Error",
-                f"Failed to find/download vision encoder:\n{e}"
-            )
-            self._settings_panel.set_model_status("Error: mmproj not found")
-            return
+            if answer == QMessageBox.StandardButton.Yes:
+                try:
+                    mmproj_path = ensure_mmproj(
+                        model_dir,
+                        progress_callback=lambda msg, _: self._settings_panel.set_model_status(msg),
+                    )
+                except Exception as e:
+                    QMessageBox.critical(
+                        self, "mmproj Error",
+                        f"Failed to download vision encoder:\n{e}"
+                    )
+                    self._settings_panel.set_model_status("Error: mmproj not found")
+                    return
+            elif answer == QMessageBox.StandardButton.No:
+                file_path, _ = QFileDialog.getOpenFileName(
+                    self, "Select mmproj (Vision Encoder)",
+                    str(model_dir), "GGUF models (*.gguf)"
+                )
+                if not file_path:
+                    self._settings_panel.set_model_status("Load cancelled")
+                    return
+                mmproj_path = Path(file_path)
+            else:
+                self._settings_panel.set_model_status("Load cancelled")
+                return
 
         # Load in background thread
         self._settings_panel.set_model_status("Loading model...")
@@ -793,6 +828,8 @@ class MainWindow(QMainWindow):
         filename = Path(local_path).name
         self._queue_label.setText(f"Downloaded: {filename}")
         self._notify(f"Download complete: {filename}", "success")
+        # Refresh the dropdown so the new model shows its ✓ marker
+        self._refresh_model_list()
 
     def _on_download_error(self, error: str):
         """Handle download failure."""
@@ -833,29 +870,113 @@ class MainWindow(QMainWindow):
         else:
             self._bell_badge.setVisible(False)
 
-    def _find_model_file(self) -> Optional[Path]:
-        """Search for the GGUF model file matching the selected combo entry."""
-        from gui.model_download_manager import get_model_info
-
-        # Try to match the specific model selected in the dropdown
-        combo_text = self._settings_panel.model_combo.currentText()
-        model_info = get_model_info(combo_text)
-        target_filename = model_info["filename"] if model_info else None
-
+    def _model_search_dirs(self) -> List[Path]:
+        """Directories scanned for GGUF model files."""
         search_dirs = []
         if self._model_dir:
             search_dirs.append(self._model_dir)
-
-        # Check parent directory (where the model likely is)
-        app_dir = Path(__file__).resolve().parent
+        app_dir = Path(__file__).resolve().parent.parent
         search_dirs.append(app_dir.parent)
         search_dirs.append(app_dir)
+        # Dedupe while preserving order
+        seen = set()
+        unique = []
+        for d in search_dirs:
+            r = d.resolve()
+            if r not in seen:
+                seen.add(r)
+                unique.append(r)
+        return unique
+
+    def _refresh_model_list(self):
+        """Rebuild the model dropdown from the registry, files on disk, and
+        user-added custom models (issue #7)."""
+        from gui.model_download_manager import MODEL_REGISTRY
+        from gui.config import get_custom_models
+
+        search_dirs = self._model_search_dirs()
+
+        # Which registry models are already downloaded?
+        downloaded = set()
+        registry_filenames = set()
+        for name, info in MODEL_REGISTRY.items():
+            registry_filenames.add(info["filename"])
+            for d in search_dirs:
+                if (d / info["filename"]).is_file():
+                    downloaded.add(name)
+                    break
+
+        # Local models: user-added paths (anywhere on disk) plus unknown
+        # GGUF files found in the search dirs
+        local_paths: List[Path] = []
+        seen_local = set()
+        for p_str in get_custom_models():
+            p = Path(p_str)
+            if p.is_file() and p.resolve() not in seen_local:
+                seen_local.add(p.resolve())
+                local_paths.append(p)
+        for d in search_dirs:
+            if not d.is_dir():
+                continue
+            try:
+                entries = sorted(d.iterdir())
+            except OSError:
+                continue
+            for f in entries:
+                if (
+                    f.is_file()
+                    and f.suffix == ".gguf"
+                    and "mmproj" not in f.name.lower()
+                    and f.name not in registry_filenames
+                    and f.resolve() not in seen_local
+                ):
+                    seen_local.add(f.resolve())
+                    local_paths.append(f)
+
+        self._settings_panel.populate_models(local_paths, downloaded)
+
+    def _browse_for_model(self):
+        """Let the user pick any GGUF model file from disk (issue #7)."""
+        start_dir = str(self._model_dir or Path.home())
+        file_path, _ = QFileDialog.getOpenFileName(
+            self, "Select GGUF Model", start_dir, "GGUF models (*.gguf)"
+        )
+        if not file_path:
+            return
+
+        path = Path(file_path)
+        if "mmproj" in path.name.lower():
+            QMessageBox.warning(
+                self, "Vision Encoder Selected",
+                "That file looks like an mmproj (vision encoder), not a main "
+                "model.\n\nSelect the main model GGUF instead — the mmproj in "
+                "the same folder is picked up automatically.",
+            )
+            return
+
+        from gui.config import add_custom_model
+        add_custom_model(str(path))
+        self._refresh_model_list()
+        self._settings_panel.select_local_model(path)
+        self._notify(f"Added local model: {path.name}", "success")
+
+    def _find_model_file(self) -> Optional[Path]:
+        """Resolve the GGUF file for the current dropdown selection."""
+        from gui.model_download_manager import get_model_info
+
+        kind, value = self._settings_panel.get_selected_model()
+
+        if kind == "local":
+            path = Path(value)
+            return path if path.is_file() else None
+
+        model_info = get_model_info(value)
+        target_filename = model_info["filename"] if model_info else None
+        search_dirs = self._model_search_dirs()
 
         # First pass: look for the specific selected model file
         if target_filename:
             for dir_path in search_dirs:
-                if not dir_path.is_dir():
-                    continue
                 candidate = dir_path / target_filename
                 if candidate.is_file():
                     return candidate
@@ -966,12 +1087,14 @@ class MainWindow(QMainWindow):
 
         self._set_connection_status("ready", "Ready")
 
-        # ── Auto-Save popup ──
-        # If we're in a batch, auto-save silently; otherwise ask the user.
+        # ── Auto-Save ──
+        # Batch items and auto-save mode save silently; otherwise ask the user.
         if self._batch_queue:
             # During batch: auto-save each completed caption silently
             self._auto_save_caption(self._current_image, caption)
             self._process_next_batch_item()
+        elif self._settings_panel.get_auto_save():
+            self._auto_save_caption(self._current_image, caption)
         else:
             # Single image or last batch item: ask user
             self._prompt_auto_save(caption)

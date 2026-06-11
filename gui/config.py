@@ -14,6 +14,11 @@ _CONFIG_FILE = _CONFIG_DIR / "config.json"
 _DEFAULTS: Dict[str, Any] = {
     "theme": "dark",
     "hf_token": "",
+    # Absolute paths of user-added GGUF models (issue #7)
+    "custom_models": [],
+    # When True, captions are written to .txt sidecars without the
+    # per-image confirmation popup
+    "auto_save_captions": False,
 }
 
 
@@ -53,3 +58,33 @@ def get_hf_token() -> str:
 def get_theme() -> str:
     """Convenience: return the stored theme mode ('dark' or 'light')."""
     return load_config().get("theme", "dark")
+
+
+def get_custom_models() -> list:
+    """Return the list of user-added GGUF model paths (strings)."""
+    models = load_config().get("custom_models", [])
+    return models if isinstance(models, list) else []
+
+
+def add_custom_model(path: str):
+    """Remember a user-added GGUF model path (deduplicated, most recent last)."""
+    cfg = load_config()
+    models = cfg.get("custom_models", [])
+    if not isinstance(models, list):
+        models = []
+    if path in models:
+        models.remove(path)
+    models.append(path)
+    cfg["custom_models"] = models
+    save_config(cfg)
+
+
+def get_auto_save_captions() -> bool:
+    """Return whether captions should be saved without the confirmation popup."""
+    return bool(load_config().get("auto_save_captions", False))
+
+
+def set_auto_save_captions(enabled: bool):
+    cfg = load_config()
+    cfg["auto_save_captions"] = bool(enabled)
+    save_config(cfg)
