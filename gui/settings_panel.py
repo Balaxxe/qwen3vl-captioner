@@ -1066,49 +1066,50 @@ class SettingsPanel(QFrame):
         Item data is ("registry", registry_key) or ("local", absolute_path)
         so display text can change without breaking lookups.
         """
-        from gui.model_download_manager import (
-            get_all_model_display_names, MODEL_REGISTRY,
-        )
+        from gui.model_download_manager import get_model_groups, MODEL_REGISTRY
 
         prev = self.model_combo.currentData()
         self.model_combo.blockSignals(True)
         self.model_combo.clear()
 
-        for name in get_all_model_display_names():
-            display = f"✓ {name}" if name in downloaded_names else name
-            self.model_combo.addItem(display, userData=("registry", name))
-            idx = self.model_combo.count() - 1
+        for group in get_model_groups():
+            if self.model_combo.count() > 0:
+                self.model_combo.insertSeparator(self.model_combo.count())
+            for name in group:
+                display = f"✓ {name}" if name in downloaded_names else name
+                self.model_combo.addItem(display, userData=("registry", name))
+                idx = self.model_combo.count() - 1
 
-            tooltips = []
-            if name in downloaded_names:
-                tooltips.append("Already downloaded")
+                tooltips = []
+                if name in downloaded_names:
+                    tooltips.append("Already downloaded")
 
-            size_gb = MODEL_REGISTRY.get(name, {}).get("size_gb")
-            if vram_gb and size_gb:
-                needs = size_gb + self._VRAM_OVERHEAD_GB
-                if vram_gb < size_gb + 1.0:
+                size_gb = MODEL_REGISTRY.get(name, {}).get("size_gb")
+                if vram_gb and size_gb:
+                    needs = size_gb + self._VRAM_OVERHEAD_GB
+                    if vram_gb < size_gb + 1.0:
+                        self.model_combo.setItemData(
+                            idx, QBrush(QColor(COLORS["error"])),
+                            Qt.ItemDataRole.ForegroundRole,
+                        )
+                        tooltips.append(
+                            f"Won't fit: needs ~{needs:.0f} GB VRAM, "
+                            f"your GPU has {vram_gb:.0f} GB"
+                        )
+                    elif vram_gb < needs:
+                        self.model_combo.setItemData(
+                            idx, QBrush(QColor(COLORS["warning"])),
+                            Qt.ItemDataRole.ForegroundRole,
+                        )
+                        tooltips.append(
+                            f"Tight fit: needs ~{needs:.0f} GB VRAM with context, "
+                            f"your GPU has {vram_gb:.0f} GB — close other GPU apps"
+                        )
+
+                if tooltips:
                     self.model_combo.setItemData(
-                        idx, QBrush(QColor(COLORS["error"])),
-                        Qt.ItemDataRole.ForegroundRole,
+                        idx, "\n".join(tooltips), Qt.ItemDataRole.ToolTipRole
                     )
-                    tooltips.append(
-                        f"Won't fit: needs ~{needs:.0f} GB VRAM, "
-                        f"your GPU has {vram_gb:.0f} GB"
-                    )
-                elif vram_gb < needs:
-                    self.model_combo.setItemData(
-                        idx, QBrush(QColor(COLORS["warning"])),
-                        Qt.ItemDataRole.ForegroundRole,
-                    )
-                    tooltips.append(
-                        f"Tight fit: needs ~{needs:.0f} GB VRAM with context, "
-                        f"your GPU has {vram_gb:.0f} GB — close other GPU apps"
-                    )
-
-            if tooltips:
-                self.model_combo.setItemData(
-                    idx, "\n".join(tooltips), Qt.ItemDataRole.ToolTipRole
-                )
 
         if local_models:
             self.model_combo.insertSeparator(self.model_combo.count())
@@ -1136,11 +1137,13 @@ class SettingsPanel(QFrame):
                 data = self.model_combo.itemData(i)
                 if not data or data[0] != "registry":
                     continue
-                # F16 is excluded from auto-selection: Q8_0 is visually
-                # indistinguishable for captioning and far faster
-                if "F16" in data[1]:
+                info = MODEL_REGISTRY.get(data[1], {})
+                # Only auto-select from the recommended family, and skip
+                # f16: Q8_0 is visually indistinguishable for captioning
+                # and far faster
+                if not info.get("recommended") or "f16" in data[1].lower():
                     continue
-                size_gb = MODEL_REGISTRY.get(data[1], {}).get("size_gb")
+                size_gb = info.get("size_gb")
                 if (
                     size_gb
                     and size_gb + self._VRAM_OVERHEAD_GB <= vram_gb

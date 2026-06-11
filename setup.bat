@@ -95,13 +95,14 @@ if /I "!CUDA_VERSION!"=="MISSING" (
 echo.
 
 REM --- Step 5: Install llama-cpp-python with Qwen3-VL support ---
-echo [5/6] Installing llama-cpp-python (Qwen3-VL build, !CUDA_WHEEL!)...
+echo [5/6] Installing llama-cpp-python (Qwen VL build, !CUDA_WHEEL!)...
 echo.
-echo      Using JamePeng's fork with Qwen3-VL vision handler support.
+echo      Using JamePeng's fork with Qwen VL vision handler support.
+echo      v0.3.40 also supports the newer Qwen3.5 / 3.6 model families.
 echo      Source: https://github.com/JamePeng/llama-cpp-python
 echo.
 
-set "WHEEL_URL=https://github.com/JamePeng/llama-cpp-python/releases/download/v0.3.24-!CUDA_WHEEL!-Basic-win-20260208/llama_cpp_python-0.3.24%%2B!CUDA_WHEEL!.basic-cp312-cp312-win_amd64.whl"
+set "WHEEL_URL=https://github.com/JamePeng/llama-cpp-python/releases/download/v0.3.40-!CUDA_WHEEL!-win-20260608/llama_cpp_python-0.3.40%%2B!CUDA_WHEEL!-cp312-cp312-win_amd64.whl"
 uv pip install --python .venv\Scripts\python.exe "!WHEEL_URL!"
 if %ERRORLEVEL% NEQ 0 (
     echo.
@@ -111,8 +112,9 @@ if %ERRORLEVEL% NEQ 0 (
     echo        Manual installation:
     echo        1. Download the wheel matching your CUDA version from:
     echo           https://github.com/JamePeng/llama-cpp-python/releases
-    echo           CUDA 13.x  -^> cu130     CUDA 12.8+ -^> cu128
-    echo           CUDA 12.6+ -^> cu126     CUDA 12.4+ -^> cu124
+    echo           CUDA 13.1+ -^> cu131     CUDA 13.0  -^> cu130
+    echo           CUDA 12.8+ -^> cu128     CUDA 12.6+ -^> cu126
+    echo           CUDA 12.4+ -^> cu124
     echo        2. Install with: .venv\Scripts\pip.exe install [downloaded-file.whl]
     echo.
     pause

@@ -25,7 +25,18 @@ The captioner now runs natively on Macs, with **two** GPU backends:
 - **One-command setup** — `./setup.sh` installs everything: Python, the Metal wheel, and the MLX backend.
 - The hardware pill shows **unified memory** pressure on Macs instead of CUDA VRAM.
 
-> **Note:** the MLX entries use the standard Qwen3-VL-8B-Instruct weights — no MLX conversion of the abliterated variant has been published yet. The abliterated model is still available on Macs through the GGUF/Metal engine.
+### 🆕 2026 model refresh
+The model dropdown is reorganized into groups (newest first):
+- **Qwen3-VL 8B ABL v2** *(new recommended default)* — [prithivMLmods' v2 abliteration](https://huggingface.co/prithivMLmods/Qwen3-VL-8B-Instruct-abliterated-v2-GGUF), full quant range
+- **Qwen3-VL 8B Caption-it** — an abliterated fine-tune [specialized for image captioning](https://huggingface.co/prithivMLmods/Qwen3-VL-8B-Abliterated-Caption-it-GGUF)
+- **Huihui Qwen3-VL 8B ABL** — [huihui-ai's abliteration](https://huggingface.co/noctrex/Huihui-Qwen3-VL-8B-Instruct-abliterated-GGUF) (quantized by noctrex)
+- **Legacy v1** — kept for existing installs
+- **MLX (Apple Silicon): abliterated** ([alexgusevski's conversions](https://huggingface.co/alexgusevski/Huihui-Qwen3-VL-8B-Instruct-abliterated-q4-mlx)) **and standard** quants, plus an experimental **Qwen3.5 4B abliterated VLM**
+
+Downloading a model now also **auto-downloads its matching mmproj** (vision encoder) when none is present.
+
+### ⚙️ Engine bump: llama-cpp-python 0.3.40
+Both platforms now use JamePeng's v0.3.40 build (Windows: cu124–cu131 auto-matched; macOS: Metal), which adds support for the **Qwen3.5 / Qwen3.6-generation** GGUF models — including the larger abliterated 27B/35B-A3B releases for big-VRAM rigs.
 
 ---
 
@@ -113,7 +124,8 @@ When enabled, this injects explicit instructions to describe **all** content (in
 
 | Your CUDA Toolkit | Wheel installed |
 |-------------------|-----------------|
-| 13.x | `cu130` |
+| 13.1+ | `cu131` |
+| 13.0 | `cu130` |
 | 12.8 – 12.9 | `cu128` |
 | 12.6 – 12.7 | `cu126` |
 | 12.4 – 12.5 | `cu124` |
@@ -260,8 +272,8 @@ pip install -r requirements.txt
 # setup.bat auto-detects your CUDA version. For manual installs, download
 # the wheel matching YOUR CUDA Toolkit from:
 # https://github.com/JamePeng/llama-cpp-python/releases
-#   CUDA 13.x -> cu130 | 12.8+ -> cu128 | 12.6+ -> cu126 | 12.4+ -> cu124
-pip install llama_cpp_python-0.3.24+cu124.basic-cp312-cp312-win_amd64.whl
+#   13.1+ -> cu131 | 13.0 -> cu130 | 12.8+ -> cu128 | 12.6+ -> cu126 | 12.4+ -> cu124
+pip install llama_cpp_python-0.3.40+cu124-cp312-cp312-win_amd64.whl
 
 # 4. Run
 python app.py

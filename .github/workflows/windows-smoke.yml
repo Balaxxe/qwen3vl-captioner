@@ -32,7 +32,7 @@ jobs:
         run: pip install -r requirements.txt
 
       - name: Install llama-cpp-python wheel (cu124, as setup.bat would)
-        run: pip install "https://github.com/JamePeng/llama-cpp-python/releases/download/v0.3.24-cu124-Basic-win-20260208/llama_cpp_python-0.3.24%2Bcu124.basic-cp312-cp312-win_amd64.whl"
+        run: pip install "https://github.com/JamePeng/llama-cpp-python/releases/download/v0.3.40-cu124-win-20260608/llama_cpp_python-0.3.40%2Bcu124-cp312-cp312-win_amd64.whl"
 
       - name: Diagnostics report sanity (llama installed, no toolkit found)
         run: python -c "from engine.cuda_setup import diagnose; r = diagnose(); print(r); assert r['llama_cpp_installed'], 'wheel not detected'; assert r['toolkit_version'] is None, 'phantom toolkit found'"

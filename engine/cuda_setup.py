@@ -23,8 +23,9 @@ _TOOLKIT_ROOT = Path(r"C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA")
 
 # Map of (major, minor) toolkit floor -> JamePeng wheel tag.
 # Checked in order; the first floor that is <= the installed version wins.
-# All four tags exist for the pinned v0.3.24 release (cp312, win_amd64).
+# All five tags exist for the pinned v0.3.40 release (cp312, win_amd64).
 _WHEEL_TAGS = [
+    ((13, 1), "cu131"),
     ((13, 0), "cu130"),
     ((12, 8), "cu128"),
     ((12, 6), "cu126"),

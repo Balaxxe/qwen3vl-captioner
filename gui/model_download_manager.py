@@ -25,97 +25,86 @@ from PyQt6.QtCore import QObject, pyqtSignal
 #   "Qwen3-VL 8B Abliterated — <QUANT> (<SIZE>)"
 # ---------------------------------------------------------------------------
 
-MODEL_REGISTRY: Dict[str, Dict[str, Any]] = {
-    # ── Main model quants (smallest → largest) ──────────────────
-    "Qwen3-VL 8B ABL — Q2_K (3.28 GB)": {
-        "repo_id": "prithivMLmods/Qwen3-VL-8B-Instruct-abliterated-v1-GGUF",
-        "filename": "Qwen3-VL-8B-Instruct-abliterated-v1.Q2_K.gguf",
-        "size_gb": 3.28,
-        "gated": False,
+def _gguf_family(
+    label: str, repo_id: str, stem: str, mmproj: str,
+    quants: Dict[str, float], recommended: bool = False,
+    quant_template: str = "{stem}.{quant}.gguf",
+) -> Dict[str, Dict[str, Any]]:
+    """Build registry entries for one GGUF model family."""
+    entries: Dict[str, Dict[str, Any]] = {}
+    for quant, size_gb in quants.items():
+        entries[f"{label} — {quant} ({size_gb:.2f} GB)"] = {
+            "repo_id": repo_id,
+            "filename": quant_template.format(stem=stem, quant=quant),
+            "mmproj_filename": mmproj,
+            "size_gb": size_gb,
+            "gated": False,
+            "recommended": recommended,
+        }
+    return entries
+
+
+# ── Recommended default: prithivMLmods abliterated v2 (Dec 2025) ─────
+_V2 = _gguf_family(
+    "Qwen3-VL 8B ABL v2",
+    "prithivMLmods/Qwen3-VL-8B-Instruct-abliterated-v2-GGUF",
+    "Qwen3-VL-8B-Instruct-abliterated-v2",
+    "Qwen3-VL-8B-Instruct-abliterated-v2.mmproj-f16.gguf",
+    {
+        "Q2_K": 3.06, "Q3_K_S": 3.51, "Q3_K_M": 3.84, "Q3_K_L": 4.13,
+        "IQ4_XS": 4.28, "Q4_K_S": 4.47, "Q4_K_M": 4.68, "Q5_K_S": 5.33,
+        "Q5_K_M": 5.45, "Q6_K": 6.26, "Q8_0": 8.11, "f16": 15.26,
     },
-    "Qwen3-VL 8B ABL — Q3_K_S (3.77 GB)": {
-        "repo_id": "prithivMLmods/Qwen3-VL-8B-Instruct-abliterated-v1-GGUF",
-        "filename": "Qwen3-VL-8B-Instruct-abliterated-v1.Q3_K_S.gguf",
-        "size_gb": 3.77,
-        "gated": False,
-    },
-    "Qwen3-VL 8B ABL — Q3_K_M (4.12 GB)": {
-        "repo_id": "prithivMLmods/Qwen3-VL-8B-Instruct-abliterated-v1-GGUF",
-        "filename": "Qwen3-VL-8B-Instruct-abliterated-v1.Q3_K_M.gguf",
-        "size_gb": 4.12,
-        "gated": False,
-    },
-    "Qwen3-VL 8B ABL — Q3_K_L (4.43 GB)": {
-        "repo_id": "prithivMLmods/Qwen3-VL-8B-Instruct-abliterated-v1-GGUF",
-        "filename": "Qwen3-VL-8B-Instruct-abliterated-v1.Q3_K_L.gguf",
-        "size_gb": 4.43,
-        "gated": False,
-    },
-    "Qwen3-VL 8B ABL — IQ4_XS (4.59 GB)": {
-        "repo_id": "prithivMLmods/Qwen3-VL-8B-Instruct-abliterated-v1-GGUF",
-        "filename": "Qwen3-VL-8B-Instruct-abliterated-v1.IQ4_XS.gguf",
-        "size_gb": 4.59,
-        "gated": False,
-    },
-    "Qwen3-VL 8B ABL — Q4_K_S (4.80 GB)": {
-        "repo_id": "prithivMLmods/Qwen3-VL-8B-Instruct-abliterated-v1-GGUF",
-        "filename": "Qwen3-VL-8B-Instruct-abliterated-v1.Q4_K_S.gguf",
-        "size_gb": 4.80,
-        "gated": False,
-    },
-    "Qwen3-VL 8B ABL — Q4_K_M (5.03 GB)": {
-        "repo_id": "prithivMLmods/Qwen3-VL-8B-Instruct-abliterated-v1-GGUF",
-        "filename": "Qwen3-VL-8B-Instruct-abliterated-v1.Q4_K_M.gguf",
-        "size_gb": 5.03,
-        "gated": False,
-    },
-    "Qwen3-VL 8B ABL — Q5_K_S (5.72 GB)": {
-        "repo_id": "prithivMLmods/Qwen3-VL-8B-Instruct-abliterated-v1-GGUF",
-        "filename": "Qwen3-VL-8B-Instruct-abliterated-v1.Q5_K_S.gguf",
-        "size_gb": 5.72,
-        "gated": False,
-    },
-    "Qwen3-VL 8B ABL — Q5_K_M (5.85 GB)": {
-        "repo_id": "prithivMLmods/Qwen3-VL-8B-Instruct-abliterated-v1-GGUF",
-        "filename": "Qwen3-VL-8B-Instruct-abliterated-v1.Q5_K_M.gguf",
-        "size_gb": 5.85,
-        "gated": False,
-    },
-    "Qwen3-VL 8B ABL — Q6_K (6.73 GB)": {
-        "repo_id": "prithivMLmods/Qwen3-VL-8B-Instruct-abliterated-v1-GGUF",
-        "filename": "Qwen3-VL-8B-Instruct-abliterated-v1.Q6_K.gguf",
-        "size_gb": 6.73,
-        "gated": False,
-    },
-    "Qwen3-VL 8B ABL — Q8_0 (8.71 GB)": {
-        "repo_id": "prithivMLmods/Qwen3-VL-8B-Instruct-abliterated-v1-GGUF",
-        "filename": "Qwen3-VL-8B-Instruct-abliterated-v1.Q8_0.gguf",
-        "size_gb": 8.71,
-        "gated": False,
-    },
-    "Qwen3-VL 8B ABL — F16 (16.4 GB)": {
-        "repo_id": "prithivMLmods/Qwen3-VL-8B-Instruct-abliterated-v1-GGUF",
-        "filename": "Qwen3-VL-8B-Instruct-abliterated-v1.f16.gguf",
-        "size_gb": 16.4,
-        "gated": False,
-    },
+    recommended=True,
+)
+
+# ── Captioning-specialized abliterated fine-tune ──────────────────────
+_CAPTION_IT = _gguf_family(
+    "Qwen3-VL 8B Caption-it",
+    "prithivMLmods/Qwen3-VL-8B-Abliterated-Caption-it-GGUF",
+    "Qwen3-VL-8B-Abliterated-Caption-it",
+    "Qwen3-VL-8B-Abliterated-Caption-it.mmproj-f16.gguf",
+    {"Q4_K_M": 4.68, "Q6_K": 6.26, "Q8_0": 8.11},
+)
+
+# ── huihui-ai abliteration (quantized by noctrex) ─────────────────────
+_HUIHUI = _gguf_family(
+    "Huihui Qwen3-VL 8B ABL",
+    "noctrex/Huihui-Qwen3-VL-8B-Instruct-abliterated-GGUF",
+    "Huihui-Qwen3-VL-8B-Instruct-abliterated",
+    "mmproj-F16.gguf",
+    {"Q4_K_M": 4.68, "Q6_K": 6.26, "Q8_0": 8.11},
+    quant_template="{stem}-{quant}.gguf",
+)
+
+# ── Legacy v1 (kept for existing installs; other quants still load
+#    via the local-file scan if already on disk) ──────────────────────
+_V1 = _gguf_family(
+    "Qwen3-VL 8B ABL",
+    "prithivMLmods/Qwen3-VL-8B-Instruct-abliterated-v1-GGUF",
+    "Qwen3-VL-8B-Instruct-abliterated-v1",
+    "Qwen3-VL-8B-Instruct-abliterated-v1.mmproj-f16.gguf",
+    {"Q4_K_M": 5.03, "Q6_K": 6.73, "Q8_0": 8.71},
+)
+# Preserve the original v1 display names (with their original size text)
+_V1 = {
+    "Qwen3-VL 8B ABL — Q4_K_M (5.03 GB)": _V1["Qwen3-VL 8B ABL — Q4_K_M (5.03 GB)"],
+    "Qwen3-VL 8B ABL — Q6_K (6.73 GB)": _V1["Qwen3-VL 8B ABL — Q6_K (6.73 GB)"],
+    "Qwen3-VL 8B ABL — Q8_0 (8.71 GB)": _V1["Qwen3-VL 8B ABL — Q8_0 (8.71 GB)"],
 }
 
-# Ordered list for the dropdown — sorted by quant size ascending
-_MODEL_ORDER = [
-    "Qwen3-VL 8B ABL — Q2_K (3.28 GB)",
-    "Qwen3-VL 8B ABL — Q3_K_S (3.77 GB)",
-    "Qwen3-VL 8B ABL — Q3_K_M (4.12 GB)",
-    "Qwen3-VL 8B ABL — Q3_K_L (4.43 GB)",
-    "Qwen3-VL 8B ABL — IQ4_XS (4.59 GB)",
-    "Qwen3-VL 8B ABL — Q4_K_S (4.80 GB)",
-    "Qwen3-VL 8B ABL — Q4_K_M (5.03 GB)",
-    "Qwen3-VL 8B ABL — Q5_K_S (5.72 GB)",
-    "Qwen3-VL 8B ABL — Q5_K_M (5.85 GB)",
-    "Qwen3-VL 8B ABL — Q6_K (6.73 GB)",
-    "Qwen3-VL 8B ABL — Q8_0 (8.71 GB)",
-    "Qwen3-VL 8B ABL — F16 (16.4 GB)",
+MODEL_REGISTRY: Dict[str, Dict[str, Any]] = {**_V2, **_CAPTION_IT, **_HUIHUI, **_V1}
+
+# Dropdown groups (separator drawn between groups)
+_GGUF_GROUPS: List[List[str]] = [
+    list(_V2.keys()),
+    list(_CAPTION_IT.keys()),
+    list(_HUIHUI.keys()),
+    list(_V1.keys()),
 ]
+
+# Flat ordered list (kept for compatibility)
+_MODEL_ORDER = [name for group in _GGUF_GROUPS for name in group]
 
 # ---------------------------------------------------------------------------
 # MLX models (Apple Silicon only) — folders of safetensors, no mmproj needed.
@@ -123,7 +112,35 @@ _MODEL_ORDER = [
 # no MLX conversion of the abliterated variant has been published yet.
 # ---------------------------------------------------------------------------
 
-MLX_MODEL_REGISTRY: Dict[str, Dict[str, Any]] = {
+# Abliterated (huihui-ai weights, converted by alexgusevski) + standard
+_MLX_ABL = {
+    "Qwen3-VL 8B MLX ABL — 4bit (5.4 GB)": {
+        "repo_id": "alexgusevski/Huihui-Qwen3-VL-8B-Instruct-abliterated-q4-mlx",
+        "folder": "Huihui-Qwen3-VL-8B-Instruct-abliterated-q4-mlx",
+        "size_gb": 5.38,
+        "gated": False,
+        "backend": "mlx",
+        "recommended": True,
+    },
+    "Qwen3-VL 8B MLX ABL — 6bit (7.3 GB)": {
+        "repo_id": "alexgusevski/Huihui-Qwen3-VL-8B-Instruct-abliterated-q6-mlx",
+        "folder": "Huihui-Qwen3-VL-8B-Instruct-abliterated-q6-mlx",
+        "size_gb": 7.29,
+        "gated": False,
+        "backend": "mlx",
+        "recommended": True,
+    },
+    "Qwen3-VL 8B MLX ABL — 8bit (9.2 GB)": {
+        "repo_id": "alexgusevski/Huihui-Qwen3-VL-8B-Instruct-abliterated-q8-mlx",
+        "folder": "Huihui-Qwen3-VL-8B-Instruct-abliterated-q8-mlx",
+        "size_gb": 9.19,
+        "gated": False,
+        "backend": "mlx",
+        "recommended": True,
+    },
+}
+
+_MLX_STD = {
     "Qwen3-VL 8B MLX — 4bit (5.4 GB)": {
         "repo_id": "lmstudio-community/Qwen3-VL-8B-Instruct-MLX-4bit",
         "folder": "Qwen3-VL-8B-Instruct-MLX-4bit",
@@ -147,6 +164,26 @@ MLX_MODEL_REGISTRY: Dict[str, Dict[str, Any]] = {
     },
 }
 
+# Next-gen Qwen3.5 abliterated VLM (experimental; needs mlx-vlm >= 0.6)
+_MLX_NEXTGEN = {
+    "Qwen3.5 4B ABL VLM MLX — 6bit (3.8 GB)": {
+        "repo_id": "monyschuk/Qwen3.5-4B-Claude-Opus-abliterated-VLM-MLX",
+        "folder": "Qwen3.5-4B-Claude-Opus-abliterated-VLM-MLX",
+        "size_gb": 3.82,
+        "gated": False,
+        "backend": "mlx",
+    },
+}
+
+MLX_MODEL_REGISTRY: Dict[str, Dict[str, Any]] = {
+    **_MLX_ABL, **_MLX_STD, **_MLX_NEXTGEN,
+}
+
+_MLX_GROUPS: List[List[str]] = [
+    list(_MLX_ABL.keys()),
+    list(_MLX_STD.keys()),
+    list(_MLX_NEXTGEN.keys()),
+]
 _MLX_MODEL_ORDER = list(MLX_MODEL_REGISTRY.keys())
 
 
@@ -165,6 +202,16 @@ def get_all_model_display_names() -> List[str]:
     if mlx_backend_supported():
         names.extend(_MLX_MODEL_ORDER)
     return names
+
+
+def get_model_groups() -> List[List[str]]:
+    """Return display names grouped for the dropdown (separator between
+    groups): v2 (recommended), Caption-it, Huihui, legacy v1, then MLX
+    groups on Apple Silicon."""
+    groups = [list(g) for g in _GGUF_GROUPS]
+    if mlx_backend_supported():
+        groups.extend(list(g) for g in _MLX_GROUPS)
+    return groups
 
 
 def get_model_info(combo_text: str) -> Optional[Dict[str, Any]]:

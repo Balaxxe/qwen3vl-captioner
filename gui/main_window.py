@@ -143,6 +143,8 @@ class MainWindow(QMainWindow):
         self._batch_index = 0
         self._download_thread: Optional[QThread] = None
         self._download_worker = None  # ModelDownloadWorker (lazy import)
+        self._finished_threads: List[QThread] = []  # keep refs until done
+        self._pending_mmproj = None  # (repo_id, filename, target_dir) to chain
 
         # NVML (GPU monitoring)
         self._nvml_handle = None
@@ -784,9 +786,7 @@ class MainWindow(QMainWindow):
         """Handle a download request from the settings panel."""
         from gui.model_download_manager import (
             get_model_info, model_file_exists, mlx_model_exists,
-            ModelDownloadWorker,
         )
-        from gui.config import get_hf_token
 
         info = get_model_info(model_name)
         if info is None:
@@ -828,24 +828,50 @@ class MainWindow(QMainWindow):
         if answer != QMessageBox.StandardButton.Yes:
             return
 
-        # Show indeterminate progress bar
-        self._progress_bar.setRange(0, 0)  # indeterminate
-        self._progress_bar.setVisible(True)
-        self._queue_label.setText(f"Downloading {display_name}...")
-        self._notify(f"Downloading {display_name}...", "download")
+        # Queue the matching mmproj to auto-download right after the model
+        # (skipped if any mmproj already exists in the target dir)
+        self._pending_mmproj = None
+        if not is_mlx and info.get("mmproj_filename"):
+            if find_mmproj_file(target_dir) is None:
+                self._pending_mmproj = (
+                    info["repo_id"], info["mmproj_filename"], target_dir
+                )
 
-        # Show cancel button during download
-        self._settings_panel.set_download_in_progress(True)
-
-        # Start download in background thread
-        token = get_hf_token()
-        self._download_thread = QThread()
-        self._download_worker = ModelDownloadWorker(
+        self._start_file_download(
             repo_id=info["repo_id"],
             filename=info.get("filename", ""),
             target_dir=target_dir,
-            hf_token=token,
+            display_name=display_name,
             snapshot_folder=info["folder"] if is_mlx else None,
+        )
+
+    def _start_file_download(
+        self, repo_id: str, filename: str, target_dir: Path,
+        display_name: str, snapshot_folder: Optional[str] = None,
+    ):
+        """Start a background download with progress UI (model or mmproj)."""
+        from gui.model_download_manager import ModelDownloadWorker
+        from gui.config import get_hf_token
+
+        self._progress_bar.setRange(0, 0)  # indeterminate until fractions arrive
+        self._progress_bar.setVisible(True)
+        self._queue_label.setText(f"Downloading {display_name}...")
+        self._notify(f"Downloading {display_name}...", "download")
+        self._settings_panel.set_download_in_progress(True)
+
+        # Keep references to finishing threads so chained downloads don't
+        # garbage-collect a QThread that is still shutting down
+        self._finished_threads = [t for t in self._finished_threads if t.isRunning()]
+        if self._download_thread is not None:
+            self._finished_threads.append(self._download_thread)
+
+        self._download_thread = QThread()
+        self._download_worker = ModelDownloadWorker(
+            repo_id=repo_id,
+            filename=filename,
+            target_dir=target_dir,
+            hf_token=get_hf_token(),
+            snapshot_folder=snapshot_folder,
         )
         self._download_worker.moveToThread(self._download_thread)
 
@@ -877,6 +903,19 @@ class MainWindow(QMainWindow):
         self._notify(f"Download complete: {filename}", "success")
         # Refresh the dropdown so the new model shows its ✓ marker
         self._refresh_model_list()
+
+        # Chain the matching vision encoder download if one was queued
+        if self._pending_mmproj and "mmproj" not in filename.lower():
+            repo_id, mmproj_name, target_dir = self._pending_mmproj
+            self._pending_mmproj = None
+            if find_mmproj_file(target_dir) is None:
+                QTimer.singleShot(
+                    150,
+                    lambda: self._start_file_download(
+                        repo_id, mmproj_name, target_dir,
+                        f"vision encoder ({mmproj_name})",
+                    ),
+                )
 
     def _on_download_error(self, error: str):
         """Handle download failure."""
