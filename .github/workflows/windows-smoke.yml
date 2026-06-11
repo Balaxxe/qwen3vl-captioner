@@ -1,0 +1,47 @@
+name: Windows Smoke Test
+
+# Runs on a real Windows x64 runner (no GPU): verifies the CUDA detection
+# logic, installs the actual dependency set including the llama-cpp wheel,
+# checks the doctor's diagnosis, and imports the app headlessly. Everything
+# except actual CUDA inference — that still needs real NVIDIA hardware.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  smoke:
+    runs-on: windows-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: CUDA detection (runner has no toolkit — must report MISSING;cu124)
+        run: |
+          $out = python -c "import sys; sys.path.insert(0, '.'); from engine.cuda_setup import detect_cuda_toolkit, recommended_wheel_tag; t = detect_cuda_toolkit(); v = 'v{}.{}'.format(t[0][0], t[0][1]) if t else 'MISSING'; print(v + ';' + recommended_wheel_tag(t[0] if t else None))"
+          echo "Detection output: $out"
+          if ($out -ne "MISSING;cu124") { exit 1 }
+
+      - name: Install dependencies (same set as setup.bat)
+        run: pip install -r requirements.txt
+
+      - name: Install llama-cpp-python wheel (cu124, as setup.bat would)
+        run: pip install "https://github.com/JamePeng/llama-cpp-python/releases/download/v0.3.24-cu124-Basic-win-20260208/llama_cpp_python-0.3.24%2Bcu124.basic-cp312-cp312-win_amd64.whl"
+
+      - name: Diagnostics report sanity (llama installed, no toolkit found)
+        run: python -c "from engine.cuda_setup import diagnose; r = diagnose(); print(r); assert r['llama_cpp_installed'], 'wheel not detected'; assert r['toolkit_version'] is None, 'phantom toolkit found'"
+
+      - name: Doctor report (informational — runner has no GPU, problems expected)
+        run: python doctor.py
+        continue-on-error: true
+
+      - name: Headless app import (exercises the no-CUDA startup path)
+        env:
+          QT_QPA_PLATFORM: offscreen
+        run: python -c "import app; import gui.main_window, gui.settings_panel, gui.model_download_manager, gui.app_settings_dialog, gui.config; print('GUI imports OK')"
