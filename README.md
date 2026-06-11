@@ -2,15 +2,38 @@
   <img src="assets/VL_GGUF_Captioner GUI Screenshot 2.png" alt="QWEN 3 VL ABL Captioner" width="900"/>
 </p>
 
-<h1 align="center">QWEN 3 VL ABL Captioner V1.2.0 — GGUF Engine</h1>
+<h1 align="center">QWEN 3 VL ABL Captioner V1.3.0 — GGUF Engine</h1>
 <h3 align="center">Professional GPU-Accelerated Image Captioning for Datasets</h3>
 
 <p align="center">
-  <img src="https://img.shields.io/badge/version-1.2.0-blue" alt="Version"/>
+  <img src="https://img.shields.io/badge/version-1.3.0-blue" alt="Version"/>
   <img src="https://img.shields.io/badge/python-3.12-blue?logo=python" alt="Python"/>
-  <img src="https://img.shields.io/badge/GPU-CUDA%2012.x-green?logo=nvidia" alt="CUDA"/>
+  <img src="https://img.shields.io/badge/GPU-CUDA%2012.4%E2%80%9313.x-green?logo=nvidia" alt="CUDA"/>
   <img src="https://img.shields.io/badge/platform-Windows-lightgrey?logo=windows" alt="Platform"/>
 </p>
+
+---
+
+## 🚀 What's New in V1.3.0
+
+### 🔧 Installation that just works (fixes #8, #10)
+- `setup.bat` now **detects your CUDA Toolkit version** (12.4 / 12.6 / 12.8 / 13.x) and installs the **matching** llama-cpp-python wheel — no more `ggml.dll` failures from wheel/toolkit mismatches.
+- Setup **verifies the engine actually loads** before declaring success.
+- New **`diagnose.bat`**: one double-click prints a full report (GPU, driver, CUDA Toolkit, wheel build, engine import) with specific fixes. Paste its output into any GitHub issue.
+- If the engine fails, the app now shows **exactly what's wrong and how to fix it** in a dialog — not just a console traceback.
+
+### 📁 Load any GGUF model (fixes #7)
+- New **Browse button** next to the model dropdown — load any Qwen3-VL compatible GGUF from anywhere on disk (BF16, abliterated v2, other quants).
+- Custom models are **remembered** between sessions, and any unknown GGUF files found in the model folder appear in the dropdown automatically.
+- If no mmproj is found next to a custom model, the app asks whether to download the default or lets you **browse for the matching mmproj**.
+
+### ✨ Quality of life
+- **Real download progress** — model downloads show actual percentage and GB progress, **Cancel works mid-download**, and interrupted downloads **resume where they left off**.
+- **VRAM-aware model list** — quants that won't fit your GPU are tinted red ("won't fit") or orange ("tight fit") with tooltips, and the default selection is the best quant for your card.
+- **✓ markers** in the model dropdown show which models are already downloaded.
+- **Auto-save captions** checkbox — saves every caption as a `.txt` sidecar instantly, no more popup per image.
+- **Max tokens** raised to 2048.
+- **Check for Updates** button in Settings (gear icon) — compares your version against the latest GitHub release.
 
 ---
 
@@ -59,17 +82,50 @@ When enabled, this injects explicit instructions to describe **all** content (in
 
 ---
 
+## 📋 Prerequisites (Windows)
+
+`setup.bat` handles Python and all Python packages automatically — but these must be on your system first:
+
+| Required | Notes |
+|----------|-------|
+| **Windows 10/11 (64-bit)** | Portable release is Windows-only |
+| **NVIDIA GPU (8 GB+ VRAM)** | GTX 1070 minimum; RTX 3060+ recommended |
+| **NVIDIA GPU driver (current)** | [nvidia.com/drivers](https://www.nvidia.com/drivers) |
+| **NVIDIA CUDA Toolkit 12.4+** | **Required — the driver alone is not enough.** Install with `winget install Nvidia.CUDA` or from [CUDA Downloads](https://developer.nvidia.com/cuda-downloads) |
+| **~10–15 GB free disk** | App, dependencies, and GGUF model files |
+
+**How CUDA versions are handled:** `setup.bat` detects your installed Toolkit and installs the matching llama-cpp-python build automatically:
+
+| Your CUDA Toolkit | Wheel installed |
+|-------------------|-----------------|
+| 13.x | `cu130` |
+| 12.8 – 12.9 | `cu128` |
+| 12.6 – 12.7 | `cu126` |
+| 12.4 – 12.5 | `cu124` |
+
+> ⚠️ If you install or upgrade the CUDA Toolkit **after** running setup, **re-run `setup.bat`** so the matching wheel is installed. Note: your GPU driver may report a newer CUDA *capability* (e.g. 13.3) than the Toolkit you have installed — what matters is the Toolkit on disk.
+
+---
+
 ## ⚡ Quick Start
 
-### 1. Run Setup
-Double-click `setup.bat` to automatically install Python and all necessary dependencies.
+### 1. Install the CUDA Toolkit (once)
+```powershell
+winget install Nvidia.CUDA
+```
 
-### 2. Get Models
-You can download models directly inside the app, or place your `.gguf` files in this same folder.
+### 2. Run Setup
+Double-click `setup.bat` to install Python, all dependencies, and the CUDA-matched engine. Setup verifies the engine loads before finishing.
+
+### 3. Get Models
+Download models directly inside the app (✓ marks the ones you already have), or click the **📁 Browse** button to load any Qwen3-VL compatible `.gguf` from disk.
 **Recommended:** `Qwen3-VL-8B-Instruct-abliterated-v1.Q6_K.gguf`
 
-### 3. Launch
+### 4. Launch
 Double-click `run.bat` to start the captioner.
+
+### Something not working?
+Double-click **`diagnose.bat`** — it prints a full report of what's wrong and how to fix it. If you open a GitHub issue, paste that report into it.
 
 ---
 
@@ -78,13 +134,16 @@ Double-click `run.bat` to start the captioner.
 ```
 qwen3vl-captioner/
 ├── app.py                  # Application entry point
+├── doctor.py               # Install diagnostics (run via diagnose.bat)
 ├── run.bat                 # Launch script (Windows)
 ├── setup.bat               # Automated installer (Windows)
+├── diagnose.bat            # One-click install diagnostics (Windows)
 ├── requirements.txt        # Python dependencies
 ├── pyproject.toml          # Project metadata
 │
 ├── engine/                 # Inference backend
 │   ├── __init__.py
+│   ├── cuda_setup.py       # CUDA toolkit detection, DLL loading, diagnostics
 │   ├── inference.py        # Qwen3VLEngine — GGUF model loading & captioning
 │   └── model_downloader.py # HuggingFace model download manager
 │
@@ -126,6 +185,16 @@ The app uses [llama-cpp-python](https://github.com/abetlen/llama-cpp-python) (Ja
 4. **Caption** → Click individual images + "Regenerate Caption", or "Batch Caption All" for the entire dataset
 5. **Export** → Save all captions as `.txt` sidecar files next to the originals
 
+### Using Your Own Models
+
+You're not limited to the built-in model list:
+
+1. Click the **📁 Browse** button next to the model dropdown and pick any Qwen3-VL compatible `.gguf` (e.g. [Qwen3-VL-8B-Instruct-abliterated-v2-GGUF](https://huggingface.co/prithivMLmods/Qwen3-VL-8B-Instruct-abliterated-v2-GGUF), BF16 quants, etc.).
+2. The app looks for an `mmproj` file **in the same folder as the model**. If none is found, it offers to download the default or lets you browse for the right one.
+3. Custom models are remembered between sessions, and any `.gguf` files dropped into the app folder show up in the dropdown automatically.
+
+> **Tip:** always pair a model with the mmproj published in its own HuggingFace repo. A mismatched vision encoder degrades caption quality.
+
 ### Target Presets
 
 | Preset | Use Case |
@@ -153,8 +222,10 @@ python -m venv .venv
 pip install -r requirements.txt
 
 # 3. Install llama-cpp-python with CUDA support
-# Download the appropriate wheel from:
+# setup.bat auto-detects your CUDA version. For manual installs, download
+# the wheel matching YOUR CUDA Toolkit from:
 # https://github.com/JamePeng/llama-cpp-python/releases
+#   CUDA 13.x -> cu130 | 12.8+ -> cu128 | 12.6+ -> cu126 | 12.4+ -> cu124
 pip install llama_cpp_python-0.3.24+cu124.basic-cp312-cp312-win_amd64.whl
 
 # 4. Run
@@ -192,8 +263,8 @@ python app.py
 | **VRAM** | 8 GB | 12+ GB |
 | **RAM** | 16 GB | 32 GB |
 | **Storage** | ~10 GB (model + app) | ~15 GB (both quants) |
-| **CUDA** | 12.0 | 12.4 |
-| **Python** | 3.11 | 3.12 |
+| **CUDA Toolkit** | 12.4 | 12.8+ or 13.x |
+| **Python** | 3.12 (installed by setup.bat) | 3.12 |
 
 ---
 
@@ -212,14 +283,18 @@ This is the standard sidecar format expected by most training tools (Kohya, Ever
 
 ## 🐛 Troubleshooting
 
+**First step for any install problem: double-click `diagnose.bat`** — it tells you exactly what's missing or mismatched and how to fix it.
+
 | Issue | Solution |
 |-------|----------|
-| **"Model not found"** | Place `.gguf` files in the parent directory (one level above `qwen3vl-captioner/`) |
-| **"CUDA not available"** | Install [CUDA Toolkit 12.x](https://developer.nvidia.com/cuda-downloads) and restart |
-| **Blank image preview** | Fixed in v1.4.2 — Qt image allocation limit raised to handle large files |
+| **"Failed to load ggml.dll"** | CUDA Toolkit missing, or the llama-cpp wheel doesn't match your CUDA version. Run `winget install Nvidia.CUDA`, then re-run `setup.bat`. Run `diagnose.bat` to confirm |
+| **"Model not found"** | Use the 📁 Browse button, or place `.gguf` files in the app folder / its parent directory |
+| **"CUDA not available"** | Install the [CUDA Toolkit](https://developer.nvidia.com/cuda-downloads) (not just GPU drivers), then re-run `setup.bat` |
+| **Custom model gives bad output** | Make sure the mmproj next to the model matches it — when in doubt, use the mmproj published in the same HuggingFace repo as the model |
+| **Blank image preview** | Fixed — Qt image allocation limit raised to handle large files |
 | **Slow model loading** | Normal — first load takes 30-60s. Subsequent loads are faster |
 | **Out of VRAM** | Use Q6_K instead of Q8_0, or reduce `max_tokens` |
-| **"access violation"** | CUDA DLLs not found. Run `run.bat` (sets PATH automatically) |
+| **"access violation"** | CUDA DLLs not found. Run via `run.bat` (sets PATH automatically) and ensure the CUDA Toolkit is installed |
 
 ---
 

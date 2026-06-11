@@ -12,14 +12,10 @@ Displays the generated caption with:
 Matches the Figma "VL-CAPTIONER Studio Pro" CaptionWorkspace design.
 """
 
-from pathlib import Path
-from typing import Optional
-
-from PyQt6.QtCore import Qt, pyqtSignal, QTimer
-from PyQt6.QtGui import QFont
+from PyQt6.QtCore import pyqtSignal, QTimer
 from PyQt6.QtWidgets import (
-    QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
-    QTextEdit, QFrame, QApplication, QSizePolicy,
+    QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
+    QTextEdit, QFrame, QApplication,
 )
 
 from gui.theme import COLORS

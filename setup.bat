@@ -6,9 +6,19 @@ echo   Qwen3-VL Captioner - Portable Setup
 echo   This will install everything needed to run the app.
 echo ============================================================
 echo.
+echo   PREREQUISITES (must already be on your system):
+echo     - Windows 10/11 (64-bit)
+echo     - NVIDIA GPU with a current driver
+echo     - NVIDIA CUDA Toolkit 12.4 or newer (NOT just the driver)
+echo       Install:  winget install Nvidia.CUDA
+echo.
+echo   Setup installs Python 3.12 and the llama-cpp-python wheel
+echo   that MATCHES your CUDA Toolkit version. If you install or
+echo   upgrade CUDA later, re-run this setup.
+echo.
 
 REM --- Step 1: Get or verify uv ---
-echo [1/4] Checking for uv package manager...
+echo [1/6] Checking for uv package manager...
 where uv >nul 2>&1
 if %ERRORLEVEL% NEQ 0 (
     echo      uv not found. Installing uv...
@@ -26,7 +36,7 @@ if %ERRORLEVEL% NEQ 0 (
 echo.
 
 REM --- Step 2: Install Python via uv ---
-echo [2/4] Installing Python 3.12 via uv...
+echo [2/6] Installing Python 3.12 via uv...
 uv python install 3.12
 if %ERRORLEVEL% NEQ 0 (
     echo [ERROR] Failed to install Python 3.12.
@@ -37,7 +47,7 @@ echo      Python 3.12 ready.
 echo.
 
 REM --- Step 3: Create virtual environment and install deps ---
-echo [3/4] Creating virtual environment and installing dependencies...
+echo [3/6] Creating virtual environment and installing dependencies...
 cd /d "%~dp0"
 
 uv venv --python 3.12 .venv
@@ -47,7 +57,7 @@ if %ERRORLEVEL% NEQ 0 (
     exit /b 1
 )
 
-uv pip install --python .venv\Scripts\python.exe PyQt6>=6.7 Pillow>=10.0 huggingface-hub>=0.25 numpy>=1.26 pynvml>=11.0
+uv pip install --python .venv\Scripts\python.exe -r requirements.txt
 if %ERRORLEVEL% NEQ 0 (
     echo [ERROR] Failed to install Python dependencies.
     pause
@@ -56,44 +66,78 @@ if %ERRORLEVEL% NEQ 0 (
 echo      Core dependencies installed.
 echo.
 
-REM --- Step 4: Install llama-cpp-python with Qwen3-VL support ---
-echo [4/4] Installing llama-cpp-python with Qwen3-VL support...
+REM --- Step 4: Detect CUDA Toolkit and select the matching wheel ---
+REM Uses the same detection logic as the app itself (engine/cuda_setup.py)
+echo [4/6] Detecting CUDA Toolkit...
+set "CUDA_VERSION="
+set "CUDA_WHEEL=cu124"
+for /f "usebackq tokens=1,2 delims=;" %%A in (`.venv\Scripts\python.exe -c "import sys; sys.path.insert(0, '.'); from engine.cuda_setup import detect_cuda_toolkit, recommended_wheel_tag; t = detect_cuda_toolkit(); v = 'v{}.{}'.format(t[0][0], t[0][1]) if t else 'MISSING'; print(v + ';' + recommended_wheel_tag(t[0] if t else None))"`) do (
+    set "CUDA_VERSION=%%A"
+    set "CUDA_WHEEL=%%B"
+)
+
+if /I "!CUDA_VERSION!"=="MISSING" (
+    echo.
+    echo      [WARNING] CUDA Toolkit NOT FOUND.
+    echo                GPU drivers alone are not enough - llama-cpp-python
+    echo                needs the CUDA Toolkit's runtime DLLs.
+    echo.
+    echo                Install it now from another window:
+    echo                    winget install Nvidia.CUDA
+    echo                or: https://developer.nvidia.com/cuda-downloads
+    echo.
+    echo                Continuing with the default ^(!CUDA_WHEEL!^) wheel.
+    echo                IMPORTANT: re-run setup.bat after installing CUDA.
+    echo.
+) else (
+    echo      Found CUDA Toolkit !CUDA_VERSION! - selecting the !CUDA_WHEEL! wheel.
+)
+echo.
+
+REM --- Step 5: Install llama-cpp-python with Qwen3-VL support ---
+echo [5/6] Installing llama-cpp-python (Qwen3-VL build, !CUDA_WHEEL!)...
 echo.
 echo      Using JamePeng's fork with Qwen3-VL vision handler support.
 echo      Source: https://github.com/JamePeng/llama-cpp-python
 echo.
 
-REM Install JamePeng's llama-cpp-python v0.3.24 with CUDA 12.4 support
-REM This wheel includes Qwen3VLChatHandler and works with CUDA 12.1+ drivers
-echo      Installing llama-cpp-python v0.3.24 (CUDA 12.4)...
-uv pip install --python .venv\Scripts\python.exe "https://github.com/JamePeng/llama-cpp-python/releases/download/v0.3.24-cu124-Basic-win-20260208/llama_cpp_python-0.3.24%%2Bcu124.basic-cp312-cp312-win_amd64.whl"
+set "WHEEL_URL=https://github.com/JamePeng/llama-cpp-python/releases/download/v0.3.24-!CUDA_WHEEL!-Basic-win-20260208/llama_cpp_python-0.3.24%%2B!CUDA_WHEEL!.basic-cp312-cp312-win_amd64.whl"
+uv pip install --python .venv\Scripts\python.exe "!WHEEL_URL!"
+if %ERRORLEVEL% NEQ 0 (
+    echo.
+    echo [ERROR] Failed to install llama-cpp-python.
+    echo        This is usually a network issue.
+    echo.
+    echo        Manual installation:
+    echo        1. Download the wheel matching your CUDA version from:
+    echo           https://github.com/JamePeng/llama-cpp-python/releases
+    echo           CUDA 13.x  -^> cu130     CUDA 12.8+ -^> cu128
+    echo           CUDA 12.6+ -^> cu126     CUDA 12.4+ -^> cu124
+    echo        2. Install with: .venv\Scripts\pip.exe install [downloaded-file.whl]
+    echo.
+    pause
+    exit /b 1
+)
+echo      llama-cpp-python ^(!CUDA_WHEEL!^) installed successfully!
+echo.
 
-if %ERRORLEVEL% EQU 0 (
-    echo      llama-cpp-python with Qwen3-VL support installed successfully!
-    goto :install_done
+REM --- Step 6: Verify the install actually works ---
+echo [6/6] Verifying the engine loads...
+.venv\Scripts\python.exe -c "import sys; sys.path.insert(0, '.'); from engine.cuda_setup import setup_cuda_dll_path; setup_cuda_dll_path(); import llama_cpp; print('      Engine OK - llama_cpp ' + llama_cpp.__version__)"
+if %ERRORLEVEL% NEQ 0 (
+    echo.
+    echo [WARNING] The engine did not load cleanly. The app may still work,
+    echo           but if it fails, run diagnose.bat for a full report and
+    echo           include its output if you open a GitHub issue.
+    echo.
 )
 
-echo.
-echo [ERROR] Failed to install llama-cpp-python.
-echo        This may indicate a network issue or missing CUDA drivers.
-echo.
-echo        Manual installation:
-echo        1. Download the wheel from:
-echo           https://github.com/JamePeng/llama-cpp-python/releases
-echo        2. Install with: .venv\Scripts\pip.exe install [downloaded-file.whl]
-echo.
-pause
-exit /b 1
-
-:cuda_done
-echo      llama-cpp-python with CUDA support installed successfully!
-
-:install_done
 echo.
 echo ============================================================
 echo   Setup complete!
 echo.
-echo   To launch the app, double-click:  run.bat
+echo   To launch the app, double-click:   run.bat
+echo   If anything goes wrong, run:       diagnose.bat
 echo ============================================================
 echo.
 pause

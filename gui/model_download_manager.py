@@ -7,6 +7,10 @@ Provides:
   - get_all_model_display_names(): returns ordered list of display names for combo
 """
 
+import time
+import urllib.error
+import urllib.parse
+import urllib.request
 from pathlib import Path
 from typing import Optional, Dict, Any, List
 
@@ -133,19 +137,41 @@ def model_file_exists(model_dir: Path, filename: str) -> bool:
 # Download worker
 # ---------------------------------------------------------------------------
 
+class _StripAuthOnRedirect(urllib.request.HTTPRedirectHandler):
+    """Drop the Authorization header when HF redirects to its CDN.
+
+    Storage backends (S3 etc.) reject requests that carry both their signed
+    URL parameters and a Bearer token."""
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        new = super().redirect_request(req, fp, code, msg, headers, newurl)
+        if new is not None:
+            old_host = urllib.parse.urlparse(req.full_url).netloc
+            new_host = urllib.parse.urlparse(newurl).netloc
+            if old_host != new_host:
+                new.headers.pop("Authorization", None)
+        return new
+
+
 class ModelDownloadWorker(QObject):
-    """Downloads a single GGUF file from HuggingFace Hub.
+    """Downloads a single GGUF file from HuggingFace with streaming progress.
+
+    Downloads to a .part file (resumable via HTTP Range) and renames it on
+    completion, so a cancelled or interrupted download picks up where it
+    left off the next time.
 
     Signals
     -------
     progress(message, fraction)   0.0-1.0 progress updates
     finished(local_path)          download complete — passes the local file path
-    error(message)                something went wrong
+    error(message)                something went wrong (or user cancelled)
     """
 
     progress = pyqtSignal(str, float)
     finished = pyqtSignal(str)      # str(local_path)
     error = pyqtSignal(str)
+
+    _CHUNK_SIZE = 1024 * 1024  # 1 MiB reads — keeps cancel latency low
 
     def __init__(
         self,
@@ -162,13 +188,13 @@ class ModelDownloadWorker(QObject):
         self._cancelled = False
 
     def cancel(self):
-        """Request cancellation of the download."""
+        """Request cancellation of the download (takes effect within ~1 MiB)."""
         self._cancelled = True
 
     def run(self):
         """Execute the download (call from a QThread)."""
         try:
-            from huggingface_hub import hf_hub_download
+            from huggingface_hub import hf_hub_url
         except ImportError:
             self.error.emit(
                 "huggingface-hub is not installed.\n"
@@ -180,30 +206,104 @@ class ModelDownloadWorker(QObject):
             self.error.emit("Download cancelled before starting.")
             return
 
+        target = Path(self.target_dir) / self.filename
+        part = target.with_name(target.name + ".part")
+
         try:
-            self.progress.emit(
-                f"Downloading {self.filename} ...",
-                0.05,
-            )
+            url = hf_hub_url(repo_id=self.repo_id, filename=self.filename)
 
-            local_path = hf_hub_download(
-                repo_id=self.repo_id,
-                filename=self.filename,
-                local_dir=str(self.target_dir),
-                local_dir_use_symlinks=False,
-                token=self.hf_token,
-            )
+            headers = {"User-Agent": "qwen3vl-captioner"}
+            if self.hf_token:
+                headers["Authorization"] = f"Bearer {self.hf_token}"
 
-            if self._cancelled:
-                self.error.emit("Download cancelled.")
+            resume_pos = part.stat().st_size if part.exists() else 0
+            if resume_pos:
+                headers["Range"] = f"bytes={resume_pos}-"
+                self.progress.emit(
+                    f"Resuming {self.filename} at {resume_pos / 1024**3:.2f} GB...", 0.0
+                )
+
+            opener = urllib.request.build_opener(_StripAuthOnRedirect)
+            request = urllib.request.Request(url, headers=headers)
+
+            try:
+                response = opener.open(request, timeout=30)
+            except urllib.error.HTTPError as http_err:
+                if http_err.code == 416 and resume_pos:
+                    # Range beyond EOF — the .part file is already complete
+                    part.rename(target)
+                    self.progress.emit("Download complete", 1.0)
+                    self.finished.emit(str(target))
+                    return
+                raise
+
+            with response:
+                if resume_pos and response.status == 206:
+                    content_range = response.headers.get("Content-Range", "")
+                    total = (
+                        int(content_range.rsplit("/", 1)[-1])
+                        if "/" in content_range else 0
+                    )
+                    mode = "ab"
+                else:
+                    # Server ignored the Range request — start over
+                    total = int(response.headers.get("Content-Length") or 0)
+                    resume_pos = 0
+                    mode = "wb"
+
+                downloaded = resume_pos
+                last_emit = 0.0
+                self.target_dir.mkdir(parents=True, exist_ok=True)
+
+                with open(part, mode) as f:
+                    while True:
+                        if self._cancelled:
+                            # Keep the .part file so the download can resume
+                            self.error.emit(
+                                "Download cancelled — progress kept, "
+                                "download again to resume."
+                            )
+                            return
+                        chunk = response.read(self._CHUNK_SIZE)
+                        if not chunk:
+                            break
+                        f.write(chunk)
+                        downloaded += len(chunk)
+
+                        now = time.monotonic()
+                        if now - last_emit >= 0.5:
+                            last_emit = now
+                            if total:
+                                fraction = downloaded / total
+                                self.progress.emit(
+                                    f"{self.filename} — "
+                                    f"{downloaded / 1024**3:.2f} / {total / 1024**3:.2f} GB "
+                                    f"({fraction * 100:.0f}%)",
+                                    fraction,
+                                )
+                            else:
+                                self.progress.emit(
+                                    f"{self.filename} — {downloaded / 1024**3:.2f} GB...",
+                                    0.0,
+                                )
+
+            if total and downloaded < total:
+                self.error.emit(
+                    f"Download incomplete ({downloaded / 1024**3:.2f} of "
+                    f"{total / 1024**3:.2f} GB) — connection dropped. "
+                    "Download again to resume."
+                )
                 return
 
+            part.rename(target)
             self.progress.emit("Download complete", 1.0)
-            self.finished.emit(str(local_path))
+            self.finished.emit(str(target))
 
         except Exception as exc:
             if self._cancelled:
-                self.error.emit("Download cancelled.")
+                self.error.emit(
+                    "Download cancelled — progress kept, download again to resume."
+                )
                 return
             msg = str(exc)
             # Surface auth errors clearly

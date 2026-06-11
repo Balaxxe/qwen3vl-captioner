@@ -10,7 +10,7 @@ Provides:
 from PyQt6.QtCore import Qt, pyqtSignal
 from PyQt6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
-    QLineEdit, QCheckBox, QFrame, QWidget,
+    QLineEdit, QCheckBox, QFrame,
 )
 
 from gui.config import load_config, save_config
@@ -21,11 +21,12 @@ class AppSettingsDialog(QDialog):
     """Modal settings dialog opened by the gear icon."""
 
     theme_changed = pyqtSignal(str)   # "dark" or "light"
+    _update_check_done = pyqtSignal(str, bool)  # (message, is_new_version)
 
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setWindowTitle("Settings")
-        self.setFixedSize(450, 340)
+        self.setFixedSize(450, 430)
         self.setStyleSheet(
             f"QDialog {{ background-color: {COLORS['bg_darkest']}; "
             f"border: 1px solid {COLORS['border_light']}; border-radius: 10px; }}"
@@ -136,6 +137,43 @@ class AppSettingsDialog(QDialog):
         token_row.addWidget(self._show_token_btn)
 
         root.addLayout(token_row)
+        root.addSpacing(16)
+
+        # --- Separator ---
+        sep2 = QFrame()
+        sep2.setFixedHeight(1)
+        sep2.setStyleSheet(f"background: {COLORS['border']};")
+        root.addWidget(sep2)
+        root.addSpacing(16)
+
+        # --- Updates Section ---
+        root.addWidget(self._section_header("UPDATES"))
+        root.addSpacing(6)
+
+        from gui.version import APP_VERSION
+        update_row = QHBoxLayout()
+        version_label = QLabel(f"Current version: v{APP_VERSION}")
+        version_label.setStyleSheet(
+            f"color: {COLORS['text_secondary']}; font-size: 12px; background: transparent;"
+        )
+        update_row.addWidget(version_label)
+        update_row.addStretch()
+
+        self._update_btn = QPushButton("Check for Updates")
+        self._update_btn.setProperty("class", "secondary-button")
+        self._update_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._update_btn.clicked.connect(self._check_for_updates)
+        update_row.addWidget(self._update_btn)
+        root.addLayout(update_row)
+
+        self._update_status = QLabel("")
+        self._update_status.setWordWrap(True)
+        self._update_status.setOpenExternalLinks(True)
+        self._update_status.setStyleSheet(
+            f"color: {COLORS['text_dim']}; font-size: 11px; background: transparent;"
+        )
+        root.addWidget(self._update_status)
+        self._update_check_done.connect(self._on_update_check_done)
 
         root.addStretch()
 
@@ -177,6 +215,75 @@ class AppSettingsDialog(QDialog):
         else:
             self._token_input.setEchoMode(QLineEdit.EchoMode.Password)
             self._show_token_btn.setText("\U0001F441")  # 👁
+
+    def _check_for_updates(self):
+        """Query GitHub for the latest release/tag in a background thread."""
+        self._update_btn.setEnabled(False)
+        self._update_status.setText("Checking...")
+
+        import threading
+        threading.Thread(target=self._fetch_latest_version, daemon=True).start()
+
+    def _fetch_latest_version(self):
+        """Worker: fetch the latest version from GitHub (runs off the UI thread)."""
+        import json
+        import re
+        import urllib.request
+
+        from gui.version import APP_VERSION, GITHUB_REPO
+
+        def parse(v: str):
+            nums = re.findall(r"\d+", v)
+            return tuple(int(n) for n in nums[:3]) if nums else (0,)
+
+        try:
+            latest = None
+            # Prefer the latest release; fall back to tags if none published
+            for url in (
+                f"https://api.github.com/repos/{GITHUB_REPO}/releases/latest",
+                f"https://api.github.com/repos/{GITHUB_REPO}/tags",
+            ):
+                try:
+                    req = urllib.request.Request(
+                        url, headers={"Accept": "application/vnd.github+json"}
+                    )
+                    with urllib.request.urlopen(req, timeout=6) as resp:
+                        data = json.load(resp)
+                    if isinstance(data, dict) and data.get("tag_name"):
+                        latest = data["tag_name"]
+                        break
+                    if isinstance(data, list) and data and data[0].get("name"):
+                        latest = data[0]["name"]
+                        break
+                except Exception:
+                    continue
+
+            if latest is None:
+                self._update_check_done.emit(
+                    "No releases found on GitHub — you're on the development version.",
+                    False,
+                )
+            elif parse(latest) > parse(APP_VERSION):
+                self._update_check_done.emit(
+                    f"New version available: {latest} — "
+                    f"<a href='https://github.com/{GITHUB_REPO}/releases'>open releases page</a>",
+                    True,
+                )
+            else:
+                self._update_check_done.emit(
+                    f"You're up to date (latest: {latest}).", False
+                )
+        except Exception as e:
+            self._update_check_done.emit(f"Update check failed: {e}", False)
+
+    def _on_update_check_done(self, message: str, is_new: bool):
+        """UI thread: show the update check result."""
+        color = COLORS["accent_text"] if is_new else COLORS["text_dim"]
+        self._update_status.setStyleSheet(
+            f"color: {color}; font-size: 11px; background: transparent;"
+        )
+        self._update_status.setText(message)
+        self._update_btn.setEnabled(True)
 
     def _on_theme_toggled(self, state: int):
         """React immediately so the user sees the change in real time."""

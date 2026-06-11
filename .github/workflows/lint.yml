@@ -1,0 +1,27 @@
+name: Lint
+
+# Static checks only — no PyQt6/CUDA needed, so this runs fast on every
+# push and PR and catches syntax errors and dead/undefined names early.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Syntax check (py_compile)
+        run: python -m compileall -q app.py doctor.py engine gui
+
+      - name: Pyflakes (undefined names, unused imports)
+        run: |
+          pip install --quiet pyflakes
+          pyflakes app.py doctor.py engine/*.py gui/*.py

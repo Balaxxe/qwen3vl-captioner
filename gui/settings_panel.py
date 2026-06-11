@@ -10,11 +10,11 @@ from pathlib import Path
 from typing import Optional, Dict, List
 
 from PyQt6.QtCore import Qt, pyqtSignal, QSize
-from PyQt6.QtGui import QIcon, QPixmap, QPainter, QColor, QPen
+from PyQt6.QtGui import QIcon, QPixmap, QPainter, QColor, QPen, QBrush
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QGridLayout, QLabel, QPushButton,
     QComboBox, QSlider, QTextEdit, QLineEdit, QFrame, QScrollArea,
-    QSizePolicy, QCheckBox,
+    QCheckBox,
 )
 
 from .theme import COLORS
@@ -488,7 +488,8 @@ class SettingsPanel(QFrame):
     export_requested = pyqtSignal()
     load_model_requested = pyqtSignal()
     unload_model_requested = pyqtSignal()
-    download_model_requested = pyqtSignal(str)   # combo display name
+    download_model_requested = pyqtSignal(str)   # registry key
+    browse_model_requested = pyqtSignal()         # pick a local .gguf (issue #7)
     cancel_requested = pyqtSignal()               # cancel generation / batch / download
     settings_changed = pyqtSignal()
 
@@ -536,13 +537,10 @@ class SettingsPanel(QFrame):
         model_row.setSpacing(6)
 
         self.model_combo = QComboBox()
-        # Populate from the full model registry (all GGUF quants + mmproj)
-        from gui.model_download_manager import get_all_model_display_names
-        self.model_combo.addItems(get_all_model_display_names())
-        # Default to Q6_K — a good balance of quality and VRAM usage
-        q6_index = self.model_combo.findText("Qwen3-VL 8B ABL — Q6_K (6.73 GB)")
-        if q6_index >= 0:
-            self.model_combo.setCurrentIndex(q6_index)
+        # Populated via populate_models() — registry quants plus any local
+        # GGUF files the user added (issue #7). Each item carries
+        # ("registry", key) or ("local", path) as item data.
+        self.populate_models(local_models=[], downloaded_names=set())
         model_row.addWidget(self.model_combo, 1)
 
         self._download_btn = QPushButton()
@@ -558,6 +556,21 @@ class SettingsPanel(QFrame):
         )
         self._download_btn.clicked.connect(self._on_download_clicked)
         model_row.addWidget(self._download_btn)
+
+        self._browse_btn = QPushButton("📁")
+        self._browse_btn.setFixedSize(32, 32)
+        self._browse_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._browse_btn.setToolTip(
+            "Browse for a local GGUF model file\n"
+            "(use any Qwen3-VL compatible quant — BF16, abliterated v2, etc.)"
+        )
+        self._browse_btn.setStyleSheet(
+            f"QPushButton {{ background: {COLORS['bg_hover']}; border: 1px solid {COLORS['border']}; "
+            f"border-radius: 6px; font-size: 14px; }}"
+            f"QPushButton:hover {{ background: {COLORS['accent']}; border-color: {COLORS['accent']}; }}"
+        )
+        self._browse_btn.clicked.connect(self.browse_model_requested.emit)
+        model_row.addWidget(self._browse_btn)
 
         layout.addLayout(model_row)
 
@@ -663,7 +676,7 @@ class SettingsPanel(QFrame):
         layout.addLayout(tok_row)
 
         self.max_tokens_slider = QSlider(Qt.Orientation.Horizontal)
-        self.max_tokens_slider.setRange(16, 1024)
+        self.max_tokens_slider.setRange(16, 2048)
         self.max_tokens_slider.setValue(256)
         self.max_tokens_slider.setSingleStep(16)
         self.max_tokens_slider.setPageStep(64)
@@ -771,6 +784,20 @@ class SettingsPanel(QFrame):
             f"color: {COLORS['text_dim']}; font-size: 10px; margin-bottom: 4px;"
         )
         layout.addWidget(batch_desc)
+
+        # Auto-save toggle — skips the per-image "save caption?" popup
+        from gui.config import get_auto_save_captions, set_auto_save_captions
+        self.auto_save_cb = QCheckBox("Auto-save captions (.txt, no popup)")
+        self.auto_save_cb.setToolTip(
+            "When checked, every generated caption is saved immediately as a\n"
+            ".txt sidecar next to the image — no confirmation dialog."
+        )
+        self.auto_save_cb.setChecked(get_auto_save_captions())
+        self.auto_save_cb.toggled.connect(set_auto_save_captions)
+        self.auto_save_cb.setStyleSheet(
+            f"font-size: 11px; color: {COLORS['text_secondary']};"
+        )
+        layout.addWidget(self.auto_save_cb)
 
         self.batch_btn = QPushButton("Batch Caption All")
         self.batch_btn.setProperty("class", "accent-button")
@@ -1006,8 +1033,148 @@ class SettingsPanel(QFrame):
             self.load_model_requested.emit()
 
     def _on_download_clicked(self):
-        """Emit download request for the currently selected model."""
-        self.download_model_requested.emit(self.model_combo.currentText())
+        """Emit download request for the currently selected registry model."""
+        kind, value = self.get_selected_model()
+        if kind == "registry":
+            self.download_model_requested.emit(value)
+        else:
+            from PyQt6.QtWidgets import QMessageBox
+            QMessageBox.information(
+                self, "Local Model",
+                "This is a local model you added — it's already on disk,\n"
+                "so there's nothing to download.",
+            )
+
+    # ─── Model List Management ────────────────────────────
+
+    # Rough VRAM headroom (GB) on top of model weights: mmproj, KV cache
+    # for an 8k context, and CUDA runtime overhead.
+    _VRAM_OVERHEAD_GB = 2.0
+
+    def populate_models(
+        self,
+        local_models: List[Path],
+        downloaded_names: set,
+        vram_gb: Optional[float] = None,
+    ):
+        """Rebuild the model dropdown.
+
+        Registry models that already exist on disk get a ✓ marker.
+        When the GPU's VRAM is known, quants that won't fit are tinted
+        red ("won't fit") or orange ("tight fit") with explanatory tooltips.
+        User-added local GGUF files are listed after a separator.
+        Item data is ("registry", registry_key) or ("local", absolute_path)
+        so display text can change without breaking lookups.
+        """
+        from gui.model_download_manager import (
+            get_all_model_display_names, MODEL_REGISTRY,
+        )
+
+        prev = self.model_combo.currentData()
+        self.model_combo.blockSignals(True)
+        self.model_combo.clear()
+
+        for name in get_all_model_display_names():
+            display = f"✓ {name}" if name in downloaded_names else name
+            self.model_combo.addItem(display, userData=("registry", name))
+            idx = self.model_combo.count() - 1
+
+            tooltips = []
+            if name in downloaded_names:
+                tooltips.append("Already downloaded")
+
+            size_gb = MODEL_REGISTRY.get(name, {}).get("size_gb")
+            if vram_gb and size_gb:
+                needs = size_gb + self._VRAM_OVERHEAD_GB
+                if vram_gb < size_gb + 1.0:
+                    self.model_combo.setItemData(
+                        idx, QBrush(QColor(COLORS["error"])),
+                        Qt.ItemDataRole.ForegroundRole,
+                    )
+                    tooltips.append(
+                        f"Won't fit: needs ~{needs:.0f} GB VRAM, "
+                        f"your GPU has {vram_gb:.0f} GB"
+                    )
+                elif vram_gb < needs:
+                    self.model_combo.setItemData(
+                        idx, QBrush(QColor(COLORS["warning"])),
+                        Qt.ItemDataRole.ForegroundRole,
+                    )
+                    tooltips.append(
+                        f"Tight fit: needs ~{needs:.0f} GB VRAM with context, "
+                        f"your GPU has {vram_gb:.0f} GB — close other GPU apps"
+                    )
+
+            if tooltips:
+                self.model_combo.setItemData(
+                    idx, "\n".join(tooltips), Qt.ItemDataRole.ToolTipRole
+                )
+
+        if local_models:
+            self.model_combo.insertSeparator(self.model_combo.count())
+            for path in local_models:
+                self.model_combo.addItem(
+                    f"📁 {path.name}", userData=("local", str(path))
+                )
+                idx = self.model_combo.count() - 1
+                self.model_combo.setItemData(
+                    idx, str(path), Qt.ItemDataRole.ToolTipRole
+                )
+
+        # Restore previous selection; else pick the largest quant that fits
+        # comfortably in VRAM; else fall back to Q6_K.
+        restored = False
+        if prev is not None:
+            for i in range(self.model_combo.count()):
+                if self.model_combo.itemData(i) == prev:
+                    self.model_combo.setCurrentIndex(i)
+                    restored = True
+                    break
+        if not restored and vram_gb:
+            best_idx, best_size = -1, -1.0
+            for i in range(self.model_combo.count()):
+                data = self.model_combo.itemData(i)
+                if not data or data[0] != "registry":
+                    continue
+                # F16 is excluded from auto-selection: Q8_0 is visually
+                # indistinguishable for captioning and far faster
+                if "F16" in data[1]:
+                    continue
+                size_gb = MODEL_REGISTRY.get(data[1], {}).get("size_gb")
+                if (
+                    size_gb
+                    and size_gb + self._VRAM_OVERHEAD_GB <= vram_gb
+                    and size_gb > best_size
+                ):
+                    best_idx, best_size = i, size_gb
+            if best_idx >= 0:
+                self.model_combo.setCurrentIndex(best_idx)
+                restored = True
+        if not restored:
+            for i in range(self.model_combo.count()):
+                data = self.model_combo.itemData(i)
+                if data and data[0] == "registry" and "Q6_K" in data[1]:
+                    self.model_combo.setCurrentIndex(i)
+                    break
+
+        self.model_combo.blockSignals(False)
+
+    def get_selected_model(self) -> tuple:
+        """Return ("registry", registry_key) or ("local", path_str) for the
+        current dropdown selection."""
+        data = self.model_combo.currentData()
+        if data:
+            return data
+        return ("registry", self.model_combo.currentText().lstrip("✓ "))
+
+    def select_local_model(self, path: Path) -> bool:
+        """Select the dropdown entry for a local model path. Returns True if found."""
+        target = ("local", str(path))
+        for i in range(self.model_combo.count()):
+            if self.model_combo.itemData(i) == target:
+                self.model_combo.setCurrentIndex(i)
+                return True
+        return False
 
     def _on_extra_option_toggled(self, _checked: bool):
         """Slot for any extra-option checkbox toggle."""
@@ -1125,6 +1292,10 @@ class SettingsPanel(QFrame):
     def get_extra_options(self) -> Dict[str, bool]:
         """Get the state of all extra option checkboxes."""
         return {key: cb.isChecked() for key, cb in self._extra_checkboxes.items()}
+
+    def get_auto_save(self) -> bool:
+        """Whether captions should be saved without the confirmation popup."""
+        return self.auto_save_cb.isChecked()
 
     # ─── Status Updates ───────────────────────────────────
 

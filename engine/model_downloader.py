@@ -5,7 +5,6 @@ On first run, if the mmproj file is not found next to the main model,
 this module downloads it from HuggingFace Hub.
 """
 
-import os
 from pathlib import Path
 from typing import Callable, Optional
 
