@@ -7,6 +7,9 @@ Provides:
   - get_all_model_display_names(): returns ordered list of display names for combo
 """
 
+import concurrent.futures
+import os
+import threading
 import time
 import urllib.error
 import urllib.parse
@@ -15,6 +18,20 @@ from pathlib import Path
 from typing import Optional, Dict, Any, List
 
 from PyQt6.QtCore import QObject, pyqtSignal
+
+# Opt into HuggingFace's high-performance Xet transfer (Rust-based, via the
+# hf_xet client that ships with huggingface_hub >= 1.0). This accelerates the
+# library-driven downloads — mmproj via hf_hub_download and MLX folders via
+# snapshot_download — for Xet-backed repos. The main GGUF model uses our own
+# parallel range downloader below, which is also cancellable.
+# (Note: the older HF_HUB_ENABLE_HF_TRANSFER / hf_transfer flag is deprecated
+# and ignored by current huggingface_hub, so we do not set it.)
+try:
+    import hf_xet  # noqa: F401  (presence confirms the Xet client is available)
+    os.environ.setdefault("HF_XET_HIGH_PERFORMANCE", "1")
+    XET_HIGH_PERF = True
+except Exception:
+    XET_HIGH_PERF = False
 
 
 # ---------------------------------------------------------------------------
@@ -278,6 +295,12 @@ class ModelDownloadWorker(QObject):
     error = pyqtSignal(str)
 
     _CHUNK_SIZE = 1024 * 1024  # 1 MiB reads — keeps cancel latency low
+    # Files at or above this size use the parallel multi-connection downloader;
+    # smaller ones use a single stream (parallel overhead isn't worth it).
+    _PARALLEL_THRESHOLD = 32 * 1024 * 1024  # 32 MiB
+    _DEFAULT_CONNECTIONS = 8
+    _SOCKET_TIMEOUT = 60   # seconds; per-connection read timeout
+    _MAX_RETRIES = 4       # per-segment retries with no progress before failing
 
     def __init__(
         self,
@@ -286,6 +309,7 @@ class ModelDownloadWorker(QObject):
         target_dir: Path,
         hf_token: str = "",
         snapshot_folder: Optional[str] = None,
+        max_connections: int = _DEFAULT_CONNECTIONS,
     ):
         super().__init__()
         self.repo_id = repo_id
@@ -295,10 +319,17 @@ class ModelDownloadWorker(QObject):
         # When set, download the whole repo into target_dir/snapshot_folder
         # (used for MLX models, which are folders rather than single files)
         self.snapshot_folder = snapshot_folder
+        # Number of parallel HTTP connections for large single-file downloads.
+        self.max_connections = max(1, int(max_connections))
         self._cancelled = False
 
     def cancel(self):
-        """Request cancellation of the download (takes effect within ~1 MiB)."""
+        """Request cancellation of the download.
+
+        Takes effect within ~1 MiB per connection. A user-cancelled download
+        discards its partial file (so a different model can be chosen); an
+        interrupted single-stream download keeps its .part for resume.
+        """
         self._cancelled = True
 
     def _run_snapshot(self):
@@ -356,10 +387,202 @@ class ModelDownloadWorker(QObject):
 
         try:
             url = hf_hub_url(repo_id=self.repo_id, filename=self.filename)
+        except Exception as exc:
+            self.error.emit(self._format_error(exc))
+            return
 
-            headers = {"User-Agent": "qwen3vl-captioner"}
-            if self.hf_token:
-                headers["Authorization"] = f"Bearer {self.hf_token}"
+        # Pick the fastest safe strategy. HuggingFace's CDN throttles each
+        # connection (~25-30 MB/s), so large files download many times faster
+        # over several parallel range requests. Fall back to a single resumable
+        # stream for small files, servers without Range support, or when a
+        # resumable .part already exists.
+        total, supports_range = self._probe(url)
+        use_parallel = (
+            supports_range
+            and total >= self._PARALLEL_THRESHOLD
+            and self.max_connections > 1
+            and not part.exists()
+        )
+        if use_parallel:
+            self._run_parallel(url, target, part, total)
+        else:
+            self._run_single(url, target, part)
+
+    # -- helpers ---------------------------------------------------------
+
+    def _base_headers(self) -> Dict[str, str]:
+        headers = {"User-Agent": "qwen3vl-captioner"}
+        if self.hf_token:
+            headers["Authorization"] = f"Bearer {self.hf_token}"
+        return headers
+
+    @staticmethod
+    def _format_error(exc: Exception) -> str:
+        msg = str(exc)
+        if "401" in msg or "403" in msg:
+            msg = (
+                f"Authentication error ({msg[:120]}).\n\n"
+                "This model may require a HuggingFace token.\n"
+                "Add your token in Settings (gear icon) and try again."
+            )
+        return msg
+
+    @staticmethod
+    def _safe_unlink(path: Path):
+        try:
+            path.unlink(missing_ok=True)
+        except Exception:
+            pass
+
+    def _probe(self, url: str):
+        """Return (total_bytes, supports_range) for *url* (0/False on failure)."""
+        headers = self._base_headers()
+        headers["Range"] = "bytes=0-0"
+        opener = urllib.request.build_opener(_StripAuthOnRedirect)
+        request = urllib.request.Request(url, headers=headers)
+        try:
+            with opener.open(request, timeout=30) as resp:
+                if resp.status == 206:
+                    content_range = resp.headers.get("Content-Range", "")
+                    total = (
+                        int(content_range.rsplit("/", 1)[-1])
+                        if "/" in content_range else 0
+                    )
+                    return total, True
+                total = int(resp.headers.get("Content-Length") or 0)
+                return total, False
+        except Exception:
+            return 0, False
+
+    def _run_parallel(self, url, target: Path, part: Path, total: int):
+        """Download *url* into *part* over several parallel range connections."""
+        conns = max(2, min(self.max_connections, 16))
+        try:
+            self.target_dir.mkdir(parents=True, exist_ok=True)
+            with open(part, "wb") as f:
+                f.truncate(total)  # pre-allocate so each thread can seek+write
+        except Exception as exc:
+            self.error.emit(f"Could not create download file: {exc}")
+            return
+
+        seg = total // conns
+        ranges = []
+        for i in range(conns):
+            start = i * seg
+            end = (total - 1) if i == conns - 1 else (start + seg - 1)
+            ranges.append((start, end))
+
+        lock = threading.Lock()
+        state = {"done": 0, "err": None}
+
+        def fetch(start: int, end: int):
+            """Download one byte range, retrying transient stalls/timeouts.
+
+            Resumes mid-segment after a failure — one flaky connection out of
+            several shouldn't doom a multi-GB download — and only gives up after
+            _MAX_RETRIES consecutive attempts that make no forward progress.
+            """
+            seg_total = end - start + 1
+            seg_done = 0
+            attempts = 0
+            while seg_done < seg_total and not self._cancelled:
+                resume_at = start + seg_done
+                headers = self._base_headers()
+                headers["Range"] = f"bytes={resume_at}-{end}"
+                opener = urllib.request.build_opener(_StripAuthOnRedirect)
+                request = urllib.request.Request(url, headers=headers)
+                before = seg_done
+                last_exc = None
+                try:
+                    with opener.open(request, timeout=self._SOCKET_TIMEOUT) as resp, \
+                            open(part, "r+b") as f:
+                        f.seek(resume_at)
+                        while True:
+                            if self._cancelled:
+                                return
+                            chunk = resp.read(self._CHUNK_SIZE)
+                            if not chunk:
+                                break
+                            f.write(chunk)
+                            seg_done += len(chunk)
+                            with lock:
+                                state["done"] += len(chunk)
+                except Exception as exc:
+                    if self._cancelled:
+                        return
+                    last_exc = exc
+
+                if seg_done >= seg_total:
+                    return  # segment complete
+                if seg_done > before:
+                    attempts = 0  # made progress this round — refresh retry budget
+                else:
+                    attempts += 1
+                    if attempts > self._MAX_RETRIES:
+                        with lock:
+                            if state["err"] is None:
+                                state["err"] = last_exc or TimeoutError(
+                                    "Download stalled (no progress after retries)."
+                                )
+                        self._cancelled = True  # stop the other connections
+                        return
+                if not self._cancelled:
+                    time.sleep(min(2 ** attempts, 8))  # backoff before retrying
+
+        self.progress.emit(
+            f"{self.filename} — {total / 1024**3:.2f} GB via {conns} connections...",
+            0.0,
+        )
+        with concurrent.futures.ThreadPoolExecutor(max_workers=conns) as pool:
+            futures = [pool.submit(fetch, s, e) for s, e in ranges]
+            last_emit = 0.0
+            while any(not fut.done() for fut in futures):
+                now = time.monotonic()
+                if now - last_emit >= 0.5:
+                    last_emit = now
+                    with lock:
+                        done = state["done"]
+                    fraction = done / total if total else 0.0
+                    self.progress.emit(
+                        f"{self.filename} — {done / 1024**3:.2f} / "
+                        f"{total / 1024**3:.2f} GB ({fraction * 100:.0f}%, "
+                        f"{conns} connections)",
+                        fraction,
+                    )
+                time.sleep(0.1)
+
+        # A parallel .part is written at offsets, so any interruption leaves it
+        # unusable for resume — always discard it on cancel or error.
+        if self._cancelled:
+            self._safe_unlink(part)
+            if state["err"] is not None:
+                self.error.emit(self._format_error(state["err"]))
+            else:
+                self.error.emit("Download cancelled.")
+            return
+
+        with lock:
+            done = state["done"]
+        if done < total:
+            self._safe_unlink(part)
+            self.error.emit(
+                f"Download incomplete ({done / 1024**3:.2f} of "
+                f"{total / 1024**3:.2f} GB) — connection dropped. Try again."
+            )
+            return
+
+        try:
+            part.replace(target)
+        except Exception as exc:
+            self.error.emit(f"Could not finalize download: {exc}")
+            return
+        self.progress.emit("Download complete", 1.0)
+        self.finished.emit(str(target))
+
+    def _run_single(self, url, target: Path, part: Path):
+        """Download *url* into *part* over a single resumable connection."""
+        try:
+            headers = self._base_headers()
 
             resume_pos = part.stat().st_size if part.exists() else 0
             if resume_pos:
@@ -372,7 +595,7 @@ class ModelDownloadWorker(QObject):
             request = urllib.request.Request(url, headers=headers)
 
             try:
-                response = opener.open(request, timeout=30)
+                response = opener.open(request, timeout=self._SOCKET_TIMEOUT)
             except urllib.error.HTTPError as http_err:
                 if http_err.code == 416 and resume_pos:
                     # Range beyond EOF — the .part file is already complete
@@ -403,11 +626,9 @@ class ModelDownloadWorker(QObject):
                 with open(part, mode) as f:
                     while True:
                         if self._cancelled:
-                            # Keep the .part file so the download can resume
-                            self.error.emit(
-                                "Download cancelled — progress kept, "
-                                "download again to resume."
-                            )
+                            # User cancelled — discard so a new model can be chosen
+                            self._safe_unlink(part)
+                            self.error.emit("Download cancelled.")
                             return
                         chunk = response.read(self._CHUNK_SIZE)
                         if not chunk:
@@ -433,6 +654,7 @@ class ModelDownloadWorker(QObject):
                                 )
 
             if total and downloaded < total:
+                # Connection dropped (not a user cancel) — keep .part for resume
                 self.error.emit(
                     f"Download incomplete ({downloaded / 1024**3:.2f} of "
                     f"{total / 1024**3:.2f} GB) — connection dropped. "
@@ -446,16 +668,7 @@ class ModelDownloadWorker(QObject):
 
         except Exception as exc:
             if self._cancelled:
-                self.error.emit(
-                    "Download cancelled — progress kept, download again to resume."
-                )
+                self._safe_unlink(part)
+                self.error.emit("Download cancelled.")
                 return
-            msg = str(exc)
-            # Surface auth errors clearly
-            if "401" in msg or "403" in msg:
-                msg = (
-                    f"Authentication error ({msg[:120]}).\n\n"
-                    "This model may require a HuggingFace token.\n"
-                    "Add your token in Settings (gear icon) and try again."
-                )
-            self.error.emit(msg)
+            self.error.emit(self._format_error(exc))

@@ -29,7 +29,7 @@ from gui.dataset_panel import DatasetPanel
 from gui.notification_panel import NotificationStore, NotificationPanel
 from gui.theme import COLORS
 from engine.inference import Qwen3VLEngine
-from engine.model_downloader import ensure_mmproj, find_mmproj_file
+from engine.model_downloader import ensure_mmproj, find_mmproj_file, download_named_mmproj
 
 
 # --- Worker for background model loading ---
@@ -488,6 +488,23 @@ class MainWindow(QMainWindow):
         )
         self._status_bar.addPermanentWidget(self._progress_bar)
 
+        # Stop button — shown right next to the progress bar only while a model
+        # download is running, so cancelling is discoverable where you watch it.
+        self._dl_stop_btn = QPushButton("✕ Stop")
+        self._dl_stop_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._dl_stop_btn.setToolTip(
+            "Stop the current download and clear the partial file"
+        )
+        self._dl_stop_btn.setStyleSheet(
+            f"QPushButton {{ background: transparent; color: {COLORS['error']}; "
+            f"border: 1px solid {COLORS['error']}; border-radius: 4px; "
+            f"font-size: 10px; font-weight: 600; padding: 1px 8px; margin-left: 8px; }} "
+            f"QPushButton:hover {{ background: {COLORS['error']}; color: #ffffff; }}"
+        )
+        self._dl_stop_btn.setVisible(False)
+        self._dl_stop_btn.clicked.connect(self._cancel_download)
+        self._status_bar.addPermanentWidget(self._dl_stop_btn)
+
         # Right side: inference time + RAM + UTF-8
         right_container = QWidget()
         right_container.setStyleSheet("background: transparent;")
@@ -638,21 +655,59 @@ class MainWindow(QMainWindow):
             self._start_model_load(model_path, None)
             return
 
-        # GGUF: find or download mmproj (vision encoder)
+        # GGUF: resolve the vision encoder (mmproj). Prefer the encoder that
+        # MATCHES the selected model — pairing a model with a different model's
+        # mmproj crashes llama.cpp natively (this was the load-crash bug). Only
+        # fall back to "any mmproj in the folder" for local/unknown models that
+        # have no registry entry.
         model_dir = model_path.parent
         self._settings_panel.set_model_status("Checking for vision encoder...")
 
-        mmproj_path = find_mmproj_file(model_dir)
+        info = self._selected_registry_info()
+        expected_mmproj = info.get("mmproj_filename") if info else None
+
+        if expected_mmproj:
+            candidate = model_dir / expected_mmproj
+            mmproj_path = candidate if candidate.is_file() else None
+        else:
+            mmproj_path = find_mmproj_file(model_dir)
+
         if mmproj_path is None:
-            # No mmproj next to the model. For custom models the default
-            # download may not match, so let the user choose.
+            mmproj_path = self._resolve_missing_mmproj(model_dir, info, expected_mmproj)
+            if mmproj_path is None:
+                return  # cancelled or download failed (status already set)
+
+        self._start_model_load(model_path, mmproj_path)
+
+    def _selected_registry_info(self):
+        """Registry info dict for the currently selected model, or None for a
+        local/unknown selection (browsed file with no registry entry)."""
+        from gui.model_download_manager import get_model_info
+        kind, value = self._settings_panel.get_selected_model()
+        if kind != "registry":
+            return None
+        return get_model_info(value)
+
+    def _resolve_missing_mmproj(self, model_dir, info, expected_mmproj):
+        """Obtain a vision encoder when the one matching the model isn't on disk.
+
+        For a known registry model, download/browse for ITS specific encoder —
+        never a generic default, which would mismatch and crash. For local
+        models, fall back to the legacy default-download/browse flow. Returns a
+        Path, or None if the user cancels or the download fails.
+        """
+        if info and expected_mmproj:
+            mismatch_note = (
+                "\n\nA different model's vision encoder is present, but pairing "
+                "mismatched encoders crashes the engine — this model needs its own."
+                if find_mmproj_file(model_dir) is not None else ""
+            )
             answer = QMessageBox.question(
                 self, "Vision Encoder Needed",
-                f"No mmproj (vision encoder) .gguf found next to:\n"
-                f"{model_path.name}\n\n"
-                "Download the default Qwen3-VL 8B mmproj into that folder?\n\n"
-                "Choose No to browse for an mmproj file manually\n"
-                "(use the mmproj published alongside your model).",
+                f"The vision encoder for this model isn't downloaded:\n"
+                f"  {expected_mmproj}\n\n"
+                f"Download it now from {info['repo_id']}?{mismatch_note}\n\n"
+                "Choose No to browse for it manually.",
                 QMessageBox.StandardButton.Yes
                 | QMessageBox.StandardButton.No
                 | QMessageBox.StandardButton.Cancel,
@@ -660,9 +715,12 @@ class MainWindow(QMainWindow):
             )
             if answer == QMessageBox.StandardButton.Yes:
                 try:
-                    mmproj_path = ensure_mmproj(
-                        model_dir,
-                        progress_callback=lambda msg, _: self._settings_panel.set_model_status(msg),
+                    self._settings_panel.set_model_status(
+                        "Downloading matching vision encoder..."
+                    )
+                    return download_named_mmproj(
+                        info["repo_id"], expected_mmproj, model_dir,
+                        progress_callback=lambda msg, _f: self._settings_panel.set_model_status(msg),
                     )
                 except Exception as e:
                     QMessageBox.critical(
@@ -670,21 +728,55 @@ class MainWindow(QMainWindow):
                         f"Failed to download vision encoder:\n{e}"
                     )
                     self._settings_panel.set_model_status("Error: mmproj not found")
-                    return
-            elif answer == QMessageBox.StandardButton.No:
+                    return None
+            if answer == QMessageBox.StandardButton.No:
                 file_path, _ = QFileDialog.getOpenFileName(
-                    self, "Select mmproj (Vision Encoder)",
+                    self, "Select matching mmproj (Vision Encoder)",
                     str(model_dir), "GGUF models (*.gguf)"
                 )
                 if not file_path:
                     self._settings_panel.set_model_status("Load cancelled")
-                    return
-                mmproj_path = Path(file_path)
-            else:
-                self._settings_panel.set_model_status("Load cancelled")
-                return
+                    return None
+                return Path(file_path)
+            self._settings_panel.set_model_status("Load cancelled")
+            return None
 
-        self._start_model_load(model_path, mmproj_path)
+        # Local/unknown model: legacy default-download or browse flow.
+        answer = QMessageBox.question(
+            self, "Vision Encoder Needed",
+            "No mmproj (vision encoder) .gguf found next to this model.\n\n"
+            "Download the default Qwen3-VL 8B mmproj into that folder?\n\n"
+            "Choose No to browse for an mmproj file manually\n"
+            "(use the mmproj published alongside your model).",
+            QMessageBox.StandardButton.Yes
+            | QMessageBox.StandardButton.No
+            | QMessageBox.StandardButton.Cancel,
+            QMessageBox.StandardButton.Yes,
+        )
+        if answer == QMessageBox.StandardButton.Yes:
+            try:
+                return ensure_mmproj(
+                    model_dir,
+                    progress_callback=lambda msg, _f: self._settings_panel.set_model_status(msg),
+                )
+            except Exception as e:
+                QMessageBox.critical(
+                    self, "mmproj Error",
+                    f"Failed to download vision encoder:\n{e}"
+                )
+                self._settings_panel.set_model_status("Error: mmproj not found")
+                return None
+        if answer == QMessageBox.StandardButton.No:
+            file_path, _ = QFileDialog.getOpenFileName(
+                self, "Select mmproj (Vision Encoder)",
+                str(model_dir), "GGUF models (*.gguf)"
+            )
+            if not file_path:
+                self._settings_panel.set_model_status("Load cancelled")
+                return None
+            return Path(file_path)
+        self._settings_panel.set_model_status("Load cancelled")
+        return None
 
     def _start_model_load(self, model_path: Path, mmproj_path: Optional[Path]):
         """Kick off the background model-load thread (both backends)."""
@@ -858,6 +950,9 @@ class MainWindow(QMainWindow):
         self._queue_label.setText(f"Downloading {display_name}...")
         self._notify(f"Downloading {display_name}...", "download")
         self._settings_panel.set_download_in_progress(True)
+        self._dl_stop_btn.setEnabled(True)
+        self._dl_stop_btn.setText("✕ Stop")
+        self._dl_stop_btn.setVisible(True)
 
         # Keep references to finishing threads so chained downloads don't
         # garbage-collect a QThread that is still shutting down
@@ -898,6 +993,7 @@ class MainWindow(QMainWindow):
         self._progress_bar.setRange(0, 100)
         self._progress_bar.setVisible(False)
         self._settings_panel.set_download_in_progress(False)
+        self._hide_download_stop_btn()
         filename = Path(local_path).name
         self._queue_label.setText(f"Downloaded: {filename}")
         self._notify(f"Download complete: {filename}", "success")
@@ -922,6 +1018,8 @@ class MainWindow(QMainWindow):
         self._progress_bar.setRange(0, 100)
         self._progress_bar.setVisible(False)
         self._settings_panel.set_download_in_progress(False)
+        self._hide_download_stop_btn()
+        self._pending_mmproj = None  # don't leave a stale mmproj queued after a failure/cancel
         self._queue_label.setText("Download failed")
         if "cancelled" not in error.lower():
             self._notify(f"Download failed: {error[:80]}", "error")
@@ -932,6 +1030,43 @@ class MainWindow(QMainWindow):
         else:
             self._queue_label.setText("Download cancelled")
             self._notify("Download cancelled by user", "info")
+
+    def _cancel_download(self):
+        """Stop an in-progress model download and clear its partial file.
+
+        Wired to the status-bar Stop button so a wrong/slow download can be
+        aborted and a different model selected.
+        """
+        if not (
+            self._download_worker
+            and self._download_thread
+            and self._download_thread.isRunning()
+        ):
+            self._hide_download_stop_btn()
+            return
+
+        answer = QMessageBox.question(
+            self, "Stop Download",
+            "Stop the current download and delete the partial file?\n\n"
+            "You can then choose a different model.",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
+        if answer != QMessageBox.StandardButton.Yes:
+            return
+
+        # Don't auto-start the matching mmproj after the model is cancelled
+        self._pending_mmproj = None
+        self._download_worker.cancel()
+        self._dl_stop_btn.setEnabled(False)
+        self._dl_stop_btn.setText("Stopping…")
+        self._notify("Stopping download…", "info")
+
+    def _hide_download_stop_btn(self):
+        """Reset and hide the status-bar download Stop button."""
+        self._dl_stop_btn.setVisible(False)
+        self._dl_stop_btn.setEnabled(True)
+        self._dl_stop_btn.setText("✕ Stop")
 
     # --- Notification helpers ---
 
