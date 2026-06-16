@@ -1,5 +1,23 @@
 # 🍎 macOS Burn Test — v1.4.0 (Metal + MLX)
 
+> ## ▶ HANDOFF — start here (Claude, read this first)
+> **This is the macOS half of a v1.4.0 validation that was just completed on
+> Windows.** On an RTX 4080 PC we confirmed: the `0.3.40` cu124 wheel loads
+> (`Engine OK`), models download fast (parallel), inference runs on the GPU
+> (~7 s/caption) — and we fixed a vision-encoder mismatch crash, then shipped
+> **v1.4.0** (`main`, tag `V1.4.0`, all CI green).
+>
+> **Your job on this M4 Mac (Apple Silicon — MLX fully supported):** confirm the
+> two macOS backends work — **Tier 1 llama.cpp Metal (GGUF + mmproj)** and
+> **Tier 2 MLX (`mlx-vlm`)** — by following the steps below, driving via computer
+> use where it helps.
+>
+> **Rules:** confirm with the user before anything that installs or modifies the
+> system; if a step fails, run `python doctor.py` and read the report before
+> changing anything. This session has **no memory of the Windows work** — every
+> detail you need is in this file and the repo. Report results back to the user
+> as you go.
+
 ## Why this test exists
 v1.4.0 added macOS support, but the validation so far has been **Windows/CUDA
 only** (see [WINDOWS_TESTING.md](WINDOWS_TESTING.md) — passed). The macOS side
