@@ -11,18 +11,27 @@ from pathlib import Path
 from engine.cuda_setup import setup_cuda_dll_path, startup_failure_advice
 from gui.version import APP_VERSION
 
-# CRITICAL: Load CUDA DLLs and initialize llama.cpp BEFORE importing PyQt6!
-# PyQt6 initialization interferes with CUDA context creation.
+# GPU backend llama.cpp uses on this platform — Metal on Apple Silicon, CUDA on
+# Windows. Used only to label the startup log messages below accurately.
+_GPU_BACKEND = (
+    "Metal" if sys.platform == "darwin"
+    else "CUDA" if sys.platform == "win32"
+    else "GPU"
+)
+
+# CRITICAL: Load GPU runtime libraries and initialize llama.cpp BEFORE importing
+# PyQt6! On Windows, PyQt6 init can interfere with CUDA context creation;
+# setup_cuda_dll_path() is a safe no-op on macOS/Linux.
 setup_cuda_dll_path()
 
 _engine_startup_error = None
 try:
     import llama_cpp
     llama_cpp.llama_backend_init()
-    print("[OK] CUDA backend initialized successfully (before PyQt6 import)")
+    print(f"[OK] {_GPU_BACKEND} backend initialized successfully (before PyQt6 import)")
 except Exception as e:
     _engine_startup_error = startup_failure_advice(str(e))
-    print(f"[WARNING] Failed to initialize CUDA backend early: {e}")
+    print(f"[WARNING] Failed to initialize {_GPU_BACKEND} backend early: {e}")
     print(_engine_startup_error)
     print("[INFO] Will attempt regular initialization later")
 
