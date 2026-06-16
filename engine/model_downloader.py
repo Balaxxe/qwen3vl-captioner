@@ -5,6 +5,7 @@ On first run, if the mmproj file is not found next to the main model,
 this module downloads it from HuggingFace Hub.
 """
 
+import importlib.util
 import os
 from pathlib import Path
 from typing import Callable, Optional
@@ -14,8 +15,8 @@ from typing import Callable, Optional
 # hf_hub_download for Xet-backed repos. (The legacy HF_HUB_ENABLE_HF_TRANSFER
 # flag is deprecated and ignored by current huggingface_hub.)
 try:
-    import hf_xet  # noqa: F401
-    os.environ.setdefault("HF_XET_HIGH_PERFORMANCE", "1")
+    if importlib.util.find_spec("hf_xet") is not None:
+        os.environ.setdefault("HF_XET_HIGH_PERFORMANCE", "1")
 except Exception:
     pass
 

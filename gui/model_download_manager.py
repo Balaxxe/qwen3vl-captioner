@@ -8,6 +8,7 @@ Provides:
 """
 
 import concurrent.futures
+import importlib.util
 import os
 import threading
 import time
@@ -27,11 +28,11 @@ from PyQt6.QtCore import QObject, pyqtSignal
 # (Note: the older HF_HUB_ENABLE_HF_TRANSFER / hf_transfer flag is deprecated
 # and ignored by current huggingface_hub, so we do not set it.)
 try:
-    import hf_xet  # noqa: F401  (presence confirms the Xet client is available)
-    os.environ.setdefault("HF_XET_HIGH_PERFORMANCE", "1")
-    XET_HIGH_PERF = True
+    XET_HIGH_PERF = importlib.util.find_spec("hf_xet") is not None
 except Exception:
     XET_HIGH_PERF = False
+if XET_HIGH_PERF:
+    os.environ.setdefault("HF_XET_HIGH_PERFORMANCE", "1")
 
 
 # ---------------------------------------------------------------------------
