@@ -18,6 +18,20 @@
 > detail you need is in this file and the repo. Report results back to the user
 > as you go.
 
+## ✅ Result — validated on Apple Silicon (M4, 2026-06-16)
+Both macOS backends pass on a clean install:
+- **Installer** — fresh `./setup.sh` ran clean end-to-end: Metal wheel
+  (`llama_cpp_python 0.3.40 … macosx_11_0_arm64`) and `mlx-vlm 0.6.3` install,
+  and the built-in verify step reports `llama.cpp OK - 0.3.40` / `MLX OK`.
+- **Tier 1 — llama.cpp Metal (GGUF + mmproj):** real caption, streaming, ~5–6 s.
+- **Tier 2 — MLX (`mlx-vlm`):** real caption, streaming — standard ~6 s,
+  abliterated-q4 ~4.4 s, Qwen3.5-4B next-gen ~4.3 s.
+- Lint clean; offscreen GUI wiring test passes (dropdown groups, mmproj pairing,
+  backend routing).
+
+With the Windows/CUDA pass (RTX 4080) already recorded, **v1.4.0 is validated on
+both platforms.** The steps below remain as the reproducible test plan.
+
 ## Why this test exists
 v1.4.0 added macOS support, but the validation so far has been **Windows/CUDA
 only** (see [WINDOWS_TESTING.md](WINDOWS_TESTING.md) — passed). The macOS side

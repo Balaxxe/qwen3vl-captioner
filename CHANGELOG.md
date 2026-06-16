@@ -42,6 +42,14 @@ git tags (`V1.x.x`).
 - Lint: detect `hf_xet` via `importlib.util.find_spec` instead of an unused
   import (pyflakes does not honor `# noqa`).
 
+### Verified
+- **Windows / CUDA** — RTX 4080: `0.3.40` cu124 wheel loads, parallel downloads,
+  ~7 s/caption on GPU.
+- **macOS / Apple Silicon** — M4: clean `./setup.sh` installs the Metal wheel
+  and `mlx-vlm`; both backends caption end-to-end — Tier 1 llama.cpp **Metal**
+  (GGUF + mmproj) ~5–6 s, Tier 2 **MLX** (std / abliterated / Qwen3.5 next-gen)
+  ~4–6 s. See [MAC_TESTING.md](MAC_TESTING.md).
+
 ## [1.3.0]
 - CUDA-matched installs, custom local models, diagnostics (`diagnose.bat` /
   `doctor.py`), and quality-of-life improvements.
