@@ -118,6 +118,22 @@ That's a real cross-platform release: Windows + macOS, MLX backend, 2026 model
 lineup, Qwen3.5/3.6 support.
 
 ### ⚠️ If the `0.3.40` wheel misbehaves (but everything else is fine)
+
+**Fastest path — a rollback is already pre-staged.** Branch
+`fix/wheel-rollback-0.3.24` is this branch with the wheel reverted to the
+community-tested `0.3.24` (and the `cu131` tag removed), keeping the 2026 model
+refresh + macOS backends. To use it:
+
+```bat
+git checkout fix/wheel-rollback-0.3.24
+setup.bat
+```
+
+You keep the model refresh but lose Qwen3.5/3.6 support until the `0.3.40` wheel
+issue is sorted. Send me the `diagnose.bat` output and I'll pinpoint the cause.
+
+<details><summary>Or apply the rollback by hand (two edits)</summary>
+
 Roll the wheel back to the community-tested `0.3.24` while keeping the model
 refresh. Two edits:
 
@@ -133,15 +149,17 @@ refresh. Two edits:
    set "WHEEL_URL=https://github.com/JamePeng/llama-cpp-python/releases/download/v0.3.24-!CUDA_WHEEL!-Basic-win-20260208/llama_cpp_python-0.3.24%%2B!CUDA_WHEEL!.basic-cp312-cp312-win_amd64.whl"
    ```
 
-2. **`engine/cuda_setup.py`** — drop the `cu131` row from `_WHEEL_TAGS` (the
-   `0.3.24` release set has no `cu131` build, so a CUDA 13.1 box must fall back
-   to `cu130`).
+2. **`engine/cuda_setup.py`** — drop the `((13, 1), "cu131"),` row from
+   `_WHEEL_TAGS` (the `0.3.24` release set has no `cu131` build, so a CUDA 13.1
+   box must fall back to `cu130`). Leave the rest of the file alone — in
+   particular keep the `pynvml` FutureWarning suppression in `diagnose()`.
 
-You keep the model refresh but lose Qwen3.5/3.6 support until the wheel is sorted.
-Send the `diagnose.bat` output and I'll pinpoint the exact cause.
+> Note: `git checkout main -- setup.bat` cleanly grabs the `0.3.24` `setup.bat`,
+> but do **not** do the same for `engine/cuda_setup.py` — `main`'s copy also
+> lacks the `pynvml` fix, so edit that file by hand (or just use the pre-staged
+> `fix/wheel-rollback-0.3.24` branch above, which already does this correctly).
 
-> Tip: `git checkout main -- setup.bat engine/cuda_setup.py` grabs the exact
-> v1.3.0 versions of just those two files if you'd rather not hand-edit.
+</details>
 
 ### 🧹 Optional cleanup
 `fix/cuda-custom-models-qol` is fully merged into `main` — safe to delete once
