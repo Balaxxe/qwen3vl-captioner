@@ -130,6 +130,36 @@ _MODEL_ORDER = [name for group in _GGUF_GROUPS for name in group]
 # no MLX conversion of the abliterated variant has been published yet.
 # ---------------------------------------------------------------------------
 
+# Abliterated v2 — the app's default GGUF model, converted to MLX and published
+# by the project (the only MLX build of this model). Matches the recommended
+# GGUF default so Mac and Windows users run the same model.
+_MLX_V2 = {
+    "Qwen3-VL 8B ABL v2 MLX — 4bit (5.4 GB)": {
+        "repo_id": "LethalDonkey/Qwen3-VL-8B-Instruct-abliterated-v2-MLX-4bit",
+        "folder": "Qwen3-VL-8B-Instruct-abliterated-v2-MLX-4bit",
+        "size_gb": 5.40,
+        "gated": False,
+        "backend": "mlx",
+        "recommended": True,
+    },
+    "Qwen3-VL 8B ABL v2 MLX — 6bit (7.4 GB)": {
+        "repo_id": "LethalDonkey/Qwen3-VL-8B-Instruct-abliterated-v2-MLX-6bit",
+        "folder": "Qwen3-VL-8B-Instruct-abliterated-v2-MLX-6bit",
+        "size_gb": 7.40,
+        "gated": False,
+        "backend": "mlx",
+        "recommended": True,
+    },
+    "Qwen3-VL 8B ABL v2 MLX — 8bit (9.2 GB)": {
+        "repo_id": "LethalDonkey/Qwen3-VL-8B-Instruct-abliterated-v2-MLX-8bit",
+        "folder": "Qwen3-VL-8B-Instruct-abliterated-v2-MLX-8bit",
+        "size_gb": 9.20,
+        "gated": False,
+        "backend": "mlx",
+        "recommended": True,
+    },
+}
+
 # Abliterated (huihui-ai weights, converted by alexgusevski) + standard
 _MLX_ABL = {
     "Qwen3-VL 8B MLX ABL — 4bit (5.4 GB)": {
@@ -194,10 +224,11 @@ _MLX_NEXTGEN = {
 }
 
 MLX_MODEL_REGISTRY: Dict[str, Dict[str, Any]] = {
-    **_MLX_ABL, **_MLX_STD, **_MLX_NEXTGEN,
+    **_MLX_V2, **_MLX_ABL, **_MLX_STD, **_MLX_NEXTGEN,
 }
 
 _MLX_GROUPS: List[List[str]] = [
+    list(_MLX_V2.keys()),
     list(_MLX_ABL.keys()),
     list(_MLX_STD.keys()),
     list(_MLX_NEXTGEN.keys()),
@@ -231,7 +262,8 @@ _GGUF_GROUP_LABELS = [
     "Legacy v1",
 ]
 _MLX_GROUP_LABELS = [
-    "MLX · Abliterated (Apple Silicon)",
+    "★ MLX · Abliterated v2 (Apple Silicon)",
+    "MLX · Abliterated (huihui)",
     "MLX · Standard",
     "MLX · Qwen3.5 (experimental)",
 ]
