@@ -222,6 +222,21 @@ def get_all_model_display_names() -> List[str]:
     return names
 
 
+# Human-readable headers shown above each dropdown group (parallel to the
+# group order returned by get_model_groups()).
+_GGUF_GROUP_LABELS = [
+    "★ Recommended — Abliterated v2",
+    "Captioning-tuned",
+    "Huihui abliterated",
+    "Legacy v1",
+]
+_MLX_GROUP_LABELS = [
+    "MLX · Abliterated (Apple Silicon)",
+    "MLX · Standard",
+    "MLX · Qwen3.5 (experimental)",
+]
+
+
 def get_model_groups() -> List[List[str]]:
     """Return display names grouped for the dropdown (separator between
     groups): v2 (recommended), Caption-it, Huihui, legacy v1, then MLX
@@ -230,6 +245,15 @@ def get_model_groups() -> List[List[str]]:
     if mlx_backend_supported():
         groups.extend(list(g) for g in _MLX_GROUPS)
     return groups
+
+
+def get_model_group_labels() -> List[str]:
+    """Return a header label for each group from get_model_groups(), in the
+    same order."""
+    labels = list(_GGUF_GROUP_LABELS)
+    if mlx_backend_supported():
+        labels.extend(_MLX_GROUP_LABELS)
+    return labels
 
 
 def get_model_info(combo_text: str) -> Optional[Dict[str, Any]]:

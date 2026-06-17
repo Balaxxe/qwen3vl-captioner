@@ -1082,15 +1082,26 @@ class SettingsPanel(QFrame):
         Item data is ("registry", registry_key) or ("local", absolute_path)
         so display text can change without breaking lookups.
         """
-        from gui.model_download_manager import get_model_groups, get_model_info
+        from gui.model_download_manager import (
+            get_model_groups, get_model_group_labels, get_model_info,
+        )
 
         prev = self.model_combo.currentData()
         self.model_combo.blockSignals(True)
         self.model_combo.clear()
 
-        for group in get_model_groups():
+        groups = get_model_groups()
+        labels = get_model_group_labels()
+        for gi, group in enumerate(groups):
             if self.model_combo.count() > 0:
                 self.model_combo.insertSeparator(self.model_combo.count())
+            # Disabled, non-selectable header row labeling the group (no
+            # userData, so it's skipped by selection/lookup logic)
+            if gi < len(labels):
+                self.model_combo.addItem(f"— {labels[gi]} —")
+                header_item = self.model_combo.model().item(self.model_combo.count() - 1)
+                if header_item is not None:
+                    header_item.setEnabled(False)
             for name in group:
                 display = f"✓ {name}" if name in downloaded_names else name
                 self.model_combo.addItem(display, userData=("registry", name))
