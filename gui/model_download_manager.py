@@ -160,6 +160,39 @@ _MLX_V2 = {
     },
 }
 
+def _mlx_quants(label, prefix, sizes, recommended=False):
+    """Build 4/6/8-bit MLX registry entries for one LethalDonkey-published model."""
+    out = {}
+    for q in (4, 6, 8):
+        sz = sizes[q]
+        out[f"{label} MLX — {q}bit ({sz:.1f} GB)"] = {
+            "repo_id": f"LethalDonkey/{prefix}-{q}bit",
+            "folder": f"{prefix}-{q}bit",
+            "size_gb": sz,
+            "gated": False,
+            "backend": "mlx",
+            "recommended": recommended,
+        }
+    return out
+
+
+# Gliese caption family (Qwen3.5, abliterated, captioning-specialized) —
+# converted to MLX and published by the project across sizes (the only MLX
+# builds of these). The 4B is marked recommended (the captioning sweet spot).
+_MLX_GLIESE = {
+    **_mlx_quants("Gliese Caption 0.8B", "Gliese-Qwen3.5-0.8B-Abliterated-Caption-MLX", {4: 0.6, 6: 0.8, 8: 1.0}),
+    **_mlx_quants("Gliese Caption 2B", "Gliese-Qwen3.5-2B-Abliterated-Caption-MLX", {4: 1.7, 6: 2.1, 8: 2.6}),
+    **_mlx_quants("Gliese Caption 4B", "Gliese-Qwen3.5-4B-Abliterated-Caption-MLX", {4: 2.9, 6: 3.9, 8: 4.9}, recommended=True),
+    **_mlx_quants("Gliese Caption 9B", "Gliese-Qwen3.5-9B-Abliterated-Caption-MLX", {4: 5.6, 6: 7.7, 8: 9.8}),
+}
+
+# Newest Qwen3-VL c_abliterated builds, converted to MLX and published.
+_MLX_CABL = {
+    **_mlx_quants("Qwen3-VL 8B c_abl v3", "Qwen3-VL-8B-Instruct-c_abliterated-v3-MLX", {4: 5.4, 6: 7.4, 8: 9.2}),
+    **_mlx_quants("Qwen3-VL 4B c_abl v2", "Qwen3-VL-4B-Instruct-c_abliterated-v2-MLX", {4: 2.9, 6: 3.9, 8: 4.8}),
+}
+
+
 # Abliterated (huihui-ai weights, converted by alexgusevski) + standard
 _MLX_ABL = {
     "Qwen3-VL 8B MLX ABL — 4bit (5.4 GB)": {
@@ -224,11 +257,13 @@ _MLX_NEXTGEN = {
 }
 
 MLX_MODEL_REGISTRY: Dict[str, Dict[str, Any]] = {
-    **_MLX_V2, **_MLX_ABL, **_MLX_STD, **_MLX_NEXTGEN,
+    **_MLX_V2, **_MLX_GLIESE, **_MLX_CABL, **_MLX_ABL, **_MLX_STD, **_MLX_NEXTGEN,
 }
 
 _MLX_GROUPS: List[List[str]] = [
     list(_MLX_V2.keys()),
+    list(_MLX_GLIESE.keys()),
+    list(_MLX_CABL.keys()),
     list(_MLX_ABL.keys()),
     list(_MLX_STD.keys()),
     list(_MLX_NEXTGEN.keys()),
@@ -263,6 +298,8 @@ _GGUF_GROUP_LABELS = [
 ]
 _MLX_GROUP_LABELS = [
     "★ MLX · Abliterated v2 (Apple Silicon)",
+    "★ MLX · Gliese Caption (Qwen3.5)",
+    "MLX · Qwen3-VL c_abliterated (newest)",
     "MLX · Abliterated (huihui)",
     "MLX · Standard",
     "MLX · Qwen3.5 (experimental)",
