@@ -1,7 +1,8 @@
-name: Lint
+name: Lint & Test
 
-# Static checks only — no PyQt6/CUDA needed, so this runs fast on every
-# push and PR and catches syntax errors and dead/undefined names early.
+# Fast checks on every push/PR: static analysis plus a headless unit-test
+# run of the pure core logic (CUDA wheel mapping, model registry, config,
+# caption cleanup). No GPU or display required.
 
 on:
   push:
@@ -19,9 +20,31 @@ jobs:
           python-version: "3.12"
 
       - name: Syntax check (py_compile)
-        run: python -m compileall -q app.py doctor.py engine gui
+        run: python -m compileall -q app.py doctor.py engine gui tests
 
       - name: Pyflakes (undefined names, unused imports)
         run: |
           pip install --quiet pyflakes
-          pyflakes app.py doctor.py engine/*.py gui/*.py
+          pyflakes app.py doctor.py engine/*.py gui/*.py tests/*.py
+
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      # PyQt6 QtCore is imported by the model registry module; these libs let
+      # it load on a headless runner.
+      - name: Install Qt runtime libs
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends libegl1 libgl1
+
+      - name: Install test dependencies
+        run: pip install --quiet pytest "PyQt6>=6.7"
+
+      - name: Run pytest (core logic, headless)
+        env:
+          QT_QPA_PLATFORM: offscreen
+        run: python -m pytest tests/ -q
