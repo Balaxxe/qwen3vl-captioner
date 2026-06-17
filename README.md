@@ -2,11 +2,11 @@
   <img src="assets/VL_GGUF_Captioner GUI Screenshot 2.png" alt="QWEN 3 VL ABL Captioner" width="900"/>
 </p>
 
-<h1 align="center">QWEN 3 VL ABL Captioner V1.4.0 — GGUF + MLX Engines</h1>
+<h1 align="center">QWEN 3 VL ABL Captioner V1.4.1 — GGUF + MLX Engines</h1>
 <h3 align="center">Professional GPU-Accelerated Image Captioning for Datasets</h3>
 
 <p align="center">
-  <img src="https://img.shields.io/badge/version-1.4.0-blue" alt="Version"/>
+  <img src="https://img.shields.io/badge/version-1.4.1-blue" alt="Version"/>
   <img src="https://img.shields.io/badge/python-3.12-blue?logo=python" alt="Python"/>
   <img src="https://img.shields.io/badge/GPU-CUDA%2012.4%E2%80%9313.x-green?logo=nvidia" alt="CUDA"/>
   <img src="https://img.shields.io/badge/Apple%20Silicon-Metal%20%2B%20MLX-black?logo=apple" alt="Apple Silicon"/>
@@ -171,8 +171,19 @@ winget install Nvidia.CUDA
 Double-click `setup.bat` to install Python, all dependencies, and the CUDA-matched engine. Setup verifies the engine loads before finishing.
 
 ### 3. Get Models
-Download models directly inside the app (✓ marks the ones you already have), or click the **📁 Browse** button to load any Qwen3-VL compatible `.gguf` from disk.
-**Recommended:** `Qwen3-VL-8B-Instruct-abliterated-v1.Q6_K.gguf`
+Download models directly inside the app (✓ marks the ones you already have), or click the **📁 Browse** button to load any Qwen3-VL compatible `.gguf` from disk. The app **pre-selects the best model for your GPU** automatically — when in doubt, keep the default and click **Load Model**.
+
+**Not sure which to pick?**
+
+| Your setup | Recommended pick |
+|---|---|
+| 12 GB+ VRAM (RTX 3060+) | **Qwen3-VL 8B ABL v2 — Q6_K** *(the default)* |
+| 8 GB VRAM | Qwen3-VL 8B ABL v2 — Q4_K_M |
+| Low VRAM / older GPU | Qwen3-VL 8B ABL v2 — Q2_K |
+| Best caption quality | Qwen3-VL 8B Caption-it — Q6_K *(captioning-tuned)* |
+| Mac (Apple Silicon) | any **MLX** entry (4-bit = smallest, 8-bit = best quality) |
+
+Models too big for your GPU are shown in **red** in the dropdown, so you can't accidentally pick one that won't fit.
 
 ### 4. Launch
 Double-click `run.bat` to start the captioner.

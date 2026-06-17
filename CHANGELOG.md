@@ -4,6 +4,40 @@ All notable changes to this project are documented here. The format loosely
 follows [Keep a Changelog](https://keepachangelog.com/); versions correspond to
 git tags (`V1.x.x`).
 
+## [1.4.1] — 2026-06-16
+
+Hardening release from a deep multi-agent code review (19 confirmed findings,
+each adversarially verified against the source). No new features.
+
+### Fixed
+- **Batch: the last image now completes correctly.** The batch queue was popped
+  one item too early, so the final image fell through to the single-image path
+  (popping a per-image save dialog) and the batch never reported completion.
+  Batch state is now tracked by an explicit flag.
+- **Parallel download corruption guards (the big ones).**
+  - A crashed parallel download left a full-size, hole-filled `.part` that the
+    resume path could finalize as a "complete" but corrupt model. A `.parallel`
+    marker now flags and discards that artifact.
+  - Parallel segments now verify each response is HTTP 206; a `200` (Range
+    ignored) is retried instead of silently corrupting the assembled file, and
+    each segment is bounded to its own length.
+- **Shutdown safety.** On window close the app no longer frees the model while a
+  load/caption worker may still be using it (could crash llama.cpp); an active
+  download is now actually cancelled; and the model load can no longer be
+  started twice concurrently through the mmproj dialogs.
+- **Cancelled captions** are no longer saved as truncated text.
+- **MLX folder downloads** can now be cancelled (between files) and show real
+  progress, instead of ignoring Stop until the multi-GB folder finished.
+- **MLX backend now applies the system prompt** (engine parity with GGUF).
+- Single-stream finalize uses `replace` (was `rename`, which raised on Windows
+  if the target existed); resume validates the `.part` against the remote size
+  before trusting it.
+- PIL image file handle is released deterministically per caption (was leaked /
+  could lock the file on Windows during batch runs).
+- The **"Refer as {name}"** option now has a real name input (was always
+  "the subject"); VRAM-fit hints and auto-select now apply to MLX models on
+  Apple Silicon; "Already downloaded" checks all model search dirs.
+
 ## [1.4.0] — 2026-06-16
 
 ### Added

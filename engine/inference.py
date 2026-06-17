@@ -54,8 +54,13 @@ def image_to_data_uri(image_path: Path, max_dim: int = 1280) -> str:
     Returns:
         A data URI string like 'data:image/png;base64,...'
     """
-    img = Image.open(image_path).convert("RGB")
-    
+    # Open inside a context manager so the source file handle is released
+    # deterministically — convert() forces the pixel load, so the detached
+    # RGB copy needs no further access to the file. (Prevents a descriptor
+    # leak / Windows file lock during batch runs.)
+    with Image.open(image_path) as src:
+        img = src.convert("RGB")
+
     # Resize if any dimension exceeds max_dim
     w, h = img.size
     if w > max_dim or h > max_dim:

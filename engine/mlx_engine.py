@@ -134,8 +134,15 @@ class MlxVlmEngine:
         from mlx_vlm import stream_generate
         from mlx_vlm.prompt_utils import apply_chat_template
 
+        # Include the system prompt so the MLX backend conditions the model
+        # the same way the GGUF backend does (engine parity). Skip an empty
+        # system turn if the caller passes "".
+        messages = []
+        if system_prompt:
+            messages.append({"role": "system", "content": system_prompt})
+        messages.append({"role": "user", "content": prompt})
         formatted_prompt = apply_chat_template(
-            self.processor, self.config, prompt, num_images=1
+            self.processor, self.config, messages, num_images=1
         )
 
         start_time = time.perf_counter()

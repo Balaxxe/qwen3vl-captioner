@@ -1,6 +1,6 @@
 [project]
 name = "qwen3vl-captioner"
-version = "1.4.0"
+version = "1.4.1"
 description = "Portable Qwen3-VL image captioning GUI with GGUF inference"
 requires-python = ">=3.11,<3.13"
 dependencies = [

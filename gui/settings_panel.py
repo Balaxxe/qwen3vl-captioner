@@ -654,6 +654,22 @@ class SettingsPanel(QFrame):
         extra_inner_layout.addWidget(extra_scroll)
         layout.addWidget(self.extra_container)
 
+        # Name source for the "Refer as {name}" option (otherwise it has no
+        # input and always falls back to "the subject").
+        name_lbl = QLabel("Refer-as name (optional)")
+        name_lbl.setStyleSheet(f"color: {COLORS['text_secondary']}; font-size: 11px;")
+        layout.addWidget(name_lbl)
+        self.name_input = QLineEdit()
+        self.name_input.setPlaceholderText("e.g. Alice / a woman — used by 'Refer as {name}'")
+        self.name_input.setFixedHeight(32)
+        self.name_input.setStyleSheet(
+            f"background-color: {COLORS['bg_input']}; color: {COLORS['text_primary']}; "
+            f"border: 1px solid {COLORS['border_light']}; border-radius: 4px; "
+            f"padding: 4px 8px; font-size: 12px;"
+        )
+        self.name_input.textChanged.connect(lambda _=None: self._refresh_prompt_preview())
+        layout.addWidget(self.name_input)
+
         layout.addWidget(self._separator())
 
         # ─── PARAMETERS ──────────────────────────────────
@@ -1066,7 +1082,7 @@ class SettingsPanel(QFrame):
         Item data is ("registry", registry_key) or ("local", absolute_path)
         so display text can change without breaking lookups.
         """
-        from gui.model_download_manager import get_model_groups, MODEL_REGISTRY
+        from gui.model_download_manager import get_model_groups, get_model_info
 
         prev = self.model_combo.currentData()
         self.model_combo.blockSignals(True)
@@ -1084,7 +1100,7 @@ class SettingsPanel(QFrame):
                 if name in downloaded_names:
                     tooltips.append("Already downloaded")
 
-                size_gb = MODEL_REGISTRY.get(name, {}).get("size_gb")
+                size_gb = (get_model_info(name) or {}).get("size_gb")
                 if vram_gb and size_gb:
                     needs = size_gb + self._VRAM_OVERHEAD_GB
                     if vram_gb < size_gb + 1.0:
@@ -1137,7 +1153,7 @@ class SettingsPanel(QFrame):
                 data = self.model_combo.itemData(i)
                 if not data or data[0] != "registry":
                     continue
-                info = MODEL_REGISTRY.get(data[1], {})
+                info = get_model_info(data[1]) or {}
                 # Only auto-select from the recommended family, and skip
                 # f16: Q8_0 is visually indistinguishable for captioning
                 # and far faster
@@ -1168,7 +1184,9 @@ class SettingsPanel(QFrame):
         data = self.model_combo.currentData()
         if data:
             return data
-        return ("registry", self.model_combo.currentText().lstrip("✓ "))
+        # Strip the exact "✓ " display prefix (removeprefix, NOT lstrip, which
+        # would strip a character *set* and could corrupt some names)
+        return ("registry", self.model_combo.currentText().removeprefix("✓ "))
 
     def select_local_model(self, path: Path) -> bool:
         """Select the dropdown entry for a local model path. Returns True if found."""
@@ -1251,11 +1269,11 @@ class SettingsPanel(QFrame):
         # Always gather extra options — even when the panel is collapsed
         extra_opts = self.get_extra_options()
 
-        # Get the {name} value if referAsName is enabled
+        # Get the {name} value if referAsName is enabled (from the name field;
+        # fall back to "the subject" when left blank)
         name_value = ""
         if extra_opts.get("referAsName"):
-            # Look for a name input field — fallback to "the subject"
-            name_value = getattr(self, "_name_input_value", "") or "the subject"
+            name_value = self.name_input.text().strip() or "the subject"
 
         # Find active preset and its builder
         if self._active_preset_id:

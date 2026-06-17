@@ -96,7 +96,14 @@ class CaptionWorker(QObject):
                 stream_callback=lambda t: self.new_token.emit(t),
                 cancel_check=lambda: self._cancelled,
             )
-            self.finished.emit(caption)
+            # A cancelled generation returns the partial text via a normal
+            # return (the engine breaks out of the stream loop), so route it
+            # to error('cancelled') rather than finished() — otherwise the
+            # truncated caption would be cached/auto-saved as a real result.
+            if self._cancelled:
+                self.error.emit("cancelled")
+            else:
+                self.finished.emit(caption)
         except Exception as e:
             self.error.emit(f"{e}\n{traceback.format_exc()}")
 
@@ -139,8 +146,10 @@ class MainWindow(QMainWindow):
         self._generation_thread: Optional[QThread] = None
         self._caption_worker: Optional[CaptionWorker] = None
         self._is_generating = False
+        self._is_loading = False  # guards re-entrant model loads (during mmproj dialogs)
         self._batch_queue: List[Path] = []
         self._batch_index = 0
+        self._batch_active = False  # True from batch start until completion/abort
         self._download_thread: Optional[QThread] = None
         self._download_worker = None  # ModelDownloadWorker (lazy import)
         self._finished_threads: List[QThread] = []  # keep refs until done
@@ -592,6 +601,7 @@ class MainWindow(QMainWindow):
         # Cancel any in-progress batch
         self._batch_queue.clear()
         self._batch_index = 0
+        self._batch_active = False
 
         # Clear captions cache
         self._captions.clear()
@@ -632,7 +642,30 @@ class MainWindow(QMainWindow):
                 self._engine = Qwen3VLEngine()
 
     def _load_model(self):
-        """Load the selected model (GGUF or MLX) in a background thread."""
+        """Load the selected model, guarding against re-entrant loads.
+
+        The mmproj dialogs / synchronous encoder download in the implementation
+        spin the Qt event loop while is_loaded is still False and the Load
+        button is enabled, so a second trigger could otherwise start a second
+        concurrent load on a single engine (racing self.model assignment). The
+        _is_loading flag prevents that.
+        """
+        if self._is_loading or (self._model_load_thread and self._model_load_thread.isRunning()):
+            return
+        if self._engine.is_loaded:
+            return
+        self._is_loading = True
+        try:
+            self._load_model_impl()
+        finally:
+            # Keep the flag set only if a background load actually started;
+            # otherwise clear it so early-return paths (model not found,
+            # load cancelled, mmproj download failed) let the user retry.
+            if not (self._model_load_thread and self._model_load_thread.isRunning()):
+                self._is_loading = False
+
+    def _load_model_impl(self):
+        """Resolve the model + vision encoder and start the load thread."""
         if self._engine.is_loaded:
             return
 
@@ -802,6 +835,7 @@ class MainWindow(QMainWindow):
 
     def _on_model_loaded(self):
         """Handle successful model load."""
+        self._is_loading = False
         info = self._engine.get_model_info()
         model_name = info.get('model_file', 'Model')
         vision = info.get('mmproj_file') or "built into model (MLX)"
@@ -819,6 +853,7 @@ class MainWindow(QMainWindow):
 
     def _on_model_load_error(self, error: str):
         """Handle model load failure."""
+        self._is_loading = False
         self._settings_panel.set_model_status("Error loading model", detail=error[:100])
         self._settings_panel.load_model_btn.setEnabled(True)
         self._set_connection_status("error", "Error")
@@ -893,17 +928,26 @@ class MainWindow(QMainWindow):
         is_mlx = info.get("backend") == "mlx"
         display_name = info["folder"] if is_mlx else info["filename"]
 
-        # Determine target directory (same as model search logic)
+        # Destination for a genuinely-new download
         target_dir = self._model_dir or Path(__file__).resolve().parent.parent
 
-        already = (
-            mlx_model_exists(target_dir, info["folder"]) if is_mlx
-            else model_file_exists(target_dir, info["filename"])
-        )
-        if already:
+        # "Already downloaded" must use the SAME multi-dir scan as discovery
+        # (_find_model_file / _refresh_model_list), otherwise a model already
+        # present in another search dir is treated as missing and re-downloaded
+        # as a duplicate.
+        existing_dir = None
+        for d in self._model_search_dirs():
+            found = (
+                mlx_model_exists(d, info["folder"]) if is_mlx
+                else model_file_exists(d, info["filename"])
+            )
+            if found:
+                existing_dir = d
+                break
+        if existing_dir is not None:
             QMessageBox.information(
                 self, "Already Downloaded",
-                f"{display_name} already exists in:\n{target_dir}"
+                f"{display_name} already exists in:\n{existing_dir}"
             )
             return
 
@@ -1163,12 +1207,22 @@ class MainWindow(QMainWindow):
                     seen_local.add(f.resolve())
                     local_paths.append(f)
 
-        # Total GPU VRAM (GB) so the dropdown can flag quants that won't fit
+        # Memory budget (GB) so the dropdown can flag models that won't fit.
+        # On NVIDIA: total VRAM via NVML. On Apple Silicon (no NVML, where the
+        # MLX models live): currently-available unified memory via psutil, so
+        # the fit hints reflect what's actually usable rather than the full
+        # machine RAM.
         vram_gb = None
         if self._nvml_handle is not None and self._pynvml is not None:
             try:
                 mem_info = self._pynvml.nvmlDeviceGetMemoryInfo(self._nvml_handle)
                 vram_gb = mem_info.total / (1024 ** 3)
+            except Exception:
+                pass
+        if vram_gb is None and sys.platform == "darwin":
+            try:
+                import psutil
+                vram_gb = psutil.virtual_memory().available / (1024 ** 3)
             except Exception:
                 pass
 
@@ -1292,11 +1346,13 @@ class MainWindow(QMainWindow):
             self._caption_worker.cancel()
             cancelled_something = True
 
-        # Cancel batch queue
-        if self._batch_queue:
+        # Cancel batch queue / active batch (the queue may already be empty if
+        # the LAST item is mid-generation, so also check the batch flag)
+        if self._batch_queue or self._batch_active:
             remaining = len(self._batch_queue)
             self._batch_queue.clear()
             self._batch_index = 0
+            self._batch_active = False
             self._progress_bar.setVisible(False)
             self._queue_label.setText(f"Batch cancelled ({remaining} remaining skipped)")
             self._notify(f"Batch cancelled — {remaining} images skipped", "info")
@@ -1335,15 +1391,17 @@ class MainWindow(QMainWindow):
         self._set_connection_status("ready", "Ready")
 
         # ── Auto-Save ──
-        # Batch items and auto-save mode save silently; otherwise ask the user.
-        if self._batch_queue:
-            # During batch: auto-save each completed caption silently
+        # Branch on the batch FLAG, not the queue: the queue is popped before
+        # the final image generates, so it is already empty while the last
+        # caption is in flight. Using the flag ensures the last item is saved
+        # silently like the rest and that _on_batch_complete still runs.
+        if self._batch_active:
             self._auto_save_caption(self._current_image, caption)
             self._process_next_batch_item()
         elif self._settings_panel.get_auto_save():
             self._auto_save_caption(self._current_image, caption)
         else:
-            # Single image or last batch item: ask user
+            # Single image: ask the user
             self._prompt_auto_save(caption)
 
     def _prompt_auto_save(self, caption: str):
@@ -1378,14 +1436,14 @@ class MainWindow(QMainWindow):
             self._caption_panel.show_feedback(f"Save error: {e}", is_success=False)
 
     def _on_caption_error(self, error: str):
-        """Handle caption generation error."""
+        """Handle a caption generation error (or a user cancellation)."""
         self._is_generating = False
         self._caption_panel.set_generating(False)
         self._settings_panel.set_generating(False)
         self._image_viewer.set_processing(False)
 
-        # Don't show error if it was a user cancellation
-        if "cancel" in error.lower():
+        was_cancel = "cancel" in error.lower()
+        if was_cancel:
             self._caption_panel.show_feedback("Generation cancelled", is_success=False)
             self._set_connection_status("ready", "Cancelled")
             self._notify("Caption generation cancelled", "info")
@@ -1394,9 +1452,17 @@ class MainWindow(QMainWindow):
             self._set_connection_status("error", "Error")
             self._notify(f"Caption error: {error[:80]}", "error")
 
-        # Cancel batch on error (not on cancel — that was already handled)
-        if "cancel" not in error.lower():
+        # End any active batch cleanly. The success path resets the batch UI via
+        # _on_batch_complete; the error/cancel path must do it here so the
+        # progress bar and queue label don't linger in a misleading state.
+        if self._batch_active or self._batch_queue:
             self._batch_queue.clear()
+            self._batch_index = 0
+            self._batch_active = False
+            self._progress_bar.setVisible(False)
+            if not was_cancel:
+                self._queue_label.setText("Batch stopped (error)")
+            self._settings_panel.set_batch_progress(0, 0)
 
     # --- Status helpers ---
 
@@ -1441,6 +1507,7 @@ class MainWindow(QMainWindow):
 
         self._batch_queue = list(all_paths)
         self._batch_index = 0
+        self._batch_active = True
 
         # Mark all as queued
         for p in self._batch_queue:
@@ -1476,6 +1543,7 @@ class MainWindow(QMainWindow):
 
     def _on_batch_complete(self):
         """Handle batch completion."""
+        self._batch_active = False
         total = self._batch_index
         self._batch_index = 0
         self._progress_bar.setVisible(False)
@@ -1659,24 +1727,39 @@ class MainWindow(QMainWindow):
 
     def closeEvent(self, event):
         """Clean up all threads on close."""
-        # Cancel any active caption generation
-        if self._caption_worker:
+        threads_clean = True
+
+        # Caption generation: cancel only if actually generating (idempotent,
+        # avoids touching an already-finished worker).
+        if self._caption_worker and self._is_generating:
             self._caption_worker.cancel()
         if self._generation_thread and self._generation_thread.isRunning():
             self._generation_thread.quit()
-            self._generation_thread.wait(3000)
+            if not self._generation_thread.wait(10000):
+                threads_clean = False
 
-        # Wait for model load thread if running
+        # The model-load thread cannot be interrupted mid-construction of the
+        # native Llama handler — give it a long blocking wait rather than
+        # racing unload() against a still-running load.
         if self._model_load_thread and self._model_load_thread.isRunning():
             self._model_load_thread.quit()
-            self._model_load_thread.wait(5000)
+            if not self._model_load_thread.wait(60000):
+                threads_clean = False
 
-        # Wait for download thread if running
+        # Download: quit() alone can't stop the blocking run()/thread pool —
+        # signal cancel first so the worker threads actually exit.
         if self._download_thread and self._download_thread.isRunning():
+            if self._download_worker:
+                self._download_worker.cancel()
             self._download_thread.quit()
-            self._download_thread.wait(5000)
+            self._download_thread.wait(10000)
 
-        self._engine.unload()
+        # Only free the native engine objects once no worker can still be using
+        # them. On a dirty exit (a wait timed out), skip unload() — the process
+        # is terminating and will reclaim the memory anyway; deleting the model
+        # under a live worker can crash llama.cpp.
+        if threads_clean:
+            self._engine.unload()
 
         # Shutdown pynvml
         self._gpu_timer.stop()

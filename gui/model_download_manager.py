@@ -327,42 +327,62 @@ class ModelDownloadWorker(QObject):
     def cancel(self):
         """Request cancellation of the download.
 
-        Takes effect within ~1 MiB per connection. A user-cancelled download
-        discards its partial file (so a different model can be chosen); an
-        interrupted single-stream download keeps its .part for resume.
+        For the GGUF range download this takes effect within ~1 MiB per
+        connection; for an MLX folder (snapshot) download it takes effect
+        between files (a single large shard cannot be interrupted mid-file).
+        A user-cancelled download discards its partial file/folder so a
+        different model can be chosen; an interrupted single-stream GGUF
+        download keeps its .part for resume.
         """
         self._cancelled = True
 
     def _run_snapshot(self):
-        """Download a whole model repo (MLX folder) via snapshot_download."""
-        from huggingface_hub import snapshot_download
+        """Download a whole model repo (MLX folder) file-by-file, so the Stop
+        button takes effect between files and real progress is reported (the
+        old single blocking snapshot_download ignored cancel and showed none)."""
+        from huggingface_hub import HfApi, hf_hub_download
 
         dest = Path(self.target_dir) / self.snapshot_folder
+        # Don't delete an already-complete folder if the user cancels a re-verify
+        already_complete = (
+            dest.is_dir()
+            and (dest / "config.json").is_file()
+            and any(dest.glob("*.safetensors"))
+        )
+
+        def _discard_partial():
+            if not already_complete:
+                import shutil
+                shutil.rmtree(dest, ignore_errors=True)
+
         try:
-            self.progress.emit(
-                f"Downloading {self.repo_id} → {self.snapshot_folder}/ "
-                "(folder download — this may take a while)...",
-                0.0,
-            )
-            local = snapshot_download(
-                self.repo_id,
-                local_dir=str(dest),
-                token=self.hf_token,
-            )
             if self._cancelled:
                 self.error.emit("Download cancelled.")
                 return
-            self.progress.emit("Download complete", 1.0)
-            self.finished.emit(str(local))
-        except Exception as exc:
-            msg = str(exc)
-            if "401" in msg or "403" in msg:
-                msg = (
-                    f"Authentication error ({msg[:120]}).\n\n"
-                    "This model may require a HuggingFace token.\n"
-                    "Add your token in Settings (gear icon) and try again."
+            self.progress.emit(f"Listing {self.repo_id} …", 0.0)
+            files = HfApi().list_repo_files(self.repo_id, token=self.hf_token)
+            n = len(files) or 1
+            for i, fname in enumerate(files):
+                if self._cancelled:
+                    _discard_partial()
+                    self.error.emit("Download cancelled.")
+                    return
+                self.progress.emit(
+                    f"{self.snapshot_folder}/ — {fname} ({i + 1}/{n})",
+                    i / n,
                 )
-            self.error.emit(msg)
+                hf_hub_download(
+                    self.repo_id, fname,
+                    local_dir=str(dest), token=self.hf_token,
+                )
+            if self._cancelled:
+                _discard_partial()
+                self.error.emit("Download cancelled.")
+                return
+            self.progress.emit("Download complete", 1.0)
+            self.finished.emit(str(dest))
+        except Exception as exc:
+            self.error.emit(self._format_error(exc))
 
     def run(self):
         """Execute the download (call from a QThread)."""
@@ -385,6 +405,15 @@ class ModelDownloadWorker(QObject):
 
         target = Path(self.target_dir) / self.filename
         part = target.with_name(target.name + ".part")
+
+        # A parallel pre-allocation killed mid-flight leaves a full-size but
+        # hole-filled .part flagged by a .parallel marker. Size alone can't tell
+        # it apart from a complete single-stream .part, so discard both and
+        # start fresh rather than resume/finalize a corrupt file.
+        parallel_marker = part.with_name(part.name + ".parallel")
+        if parallel_marker.exists():
+            self._safe_unlink(part)
+            self._safe_unlink(parallel_marker)
 
         try:
             url = hf_hub_url(repo_id=self.repo_id, filename=self.filename)
@@ -458,11 +487,18 @@ class ModelDownloadWorker(QObject):
     def _run_parallel(self, url, target: Path, part: Path, total: int):
         """Download *url* into *part* over several parallel range connections."""
         conns = max(2, min(self.max_connections, 16))
+        # Marker: flags that this .part is a full-size but hole-filled parallel
+        # pre-allocation. It is removed only on clean finalize. If the process
+        # is killed mid-download, the marker survives and run() discards the
+        # corrupt .part instead of resuming/finalizing it.
+        marker = part.with_name(part.name + ".parallel")
         try:
             self.target_dir.mkdir(parents=True, exist_ok=True)
+            marker.write_text("1")
             with open(part, "wb") as f:
                 f.truncate(total)  # pre-allocate so each thread can seek+write
         except Exception as exc:
+            self._safe_unlink(marker)
             self.error.emit(f"Could not create download file: {exc}")
             return
 
@@ -497,17 +533,31 @@ class ModelDownloadWorker(QObject):
                 try:
                     with opener.open(request, timeout=self._SOCKET_TIMEOUT) as resp, \
                             open(part, "r+b") as f:
+                        # Every segment request carries a Range header, so a
+                        # compliant server MUST answer 206. A 200 means Range
+                        # was ignored and the body is the WHOLE file — writing
+                        # it at this segment's offset would overrun into other
+                        # segments. Treat as a transient failure so the retry
+                        # loop re-requests (and ultimately fails loudly).
+                        if resp.status != 206:
+                            raise IOError(
+                                f"server ignored Range for segment {start}-{end} "
+                                f"(status {resp.status})"
+                            )
                         f.seek(resume_at)
-                        while True:
+                        remaining = seg_total - seg_done  # never write past this segment
+                        while remaining > 0:
                             if self._cancelled:
                                 return
-                            chunk = resp.read(self._CHUNK_SIZE)
+                            chunk = resp.read(min(self._CHUNK_SIZE, remaining))
                             if not chunk:
                                 break
                             f.write(chunk)
-                            seg_done += len(chunk)
+                            n = len(chunk)
+                            seg_done += n
+                            remaining -= n
                             with lock:
-                                state["done"] += len(chunk)
+                                state["done"] += n
                 except Exception as exc:
                     if self._cancelled:
                         return
@@ -556,6 +606,7 @@ class ModelDownloadWorker(QObject):
         # unusable for resume — always discard it on cancel or error.
         if self._cancelled:
             self._safe_unlink(part)
+            self._safe_unlink(marker)
             if state["err"] is not None:
                 self.error.emit(self._format_error(state["err"]))
             else:
@@ -566,6 +617,7 @@ class ModelDownloadWorker(QObject):
             done = state["done"]
         if done < total:
             self._safe_unlink(part)
+            self._safe_unlink(marker)
             self.error.emit(
                 f"Download incomplete ({done / 1024**3:.2f} of "
                 f"{total / 1024**3:.2f} GB) — connection dropped. Try again."
@@ -577,6 +629,7 @@ class ModelDownloadWorker(QObject):
         except Exception as exc:
             self.error.emit(f"Could not finalize download: {exc}")
             return
+        self._safe_unlink(marker)  # finalized cleanly — drop the hole-filled flag
         self.progress.emit("Download complete", 1.0)
         self.finished.emit(str(target))
 
@@ -586,6 +639,17 @@ class ModelDownloadWorker(QObject):
             headers = self._base_headers()
 
             resume_pos = part.stat().st_size if part.exists() else 0
+            if resume_pos:
+                # Guard against resuming onto a stale/oversized .part (e.g. one
+                # left by a different file with the same name): if it already
+                # exceeds the current remote size it can't be a valid partial of
+                # this file, so discard it and start fresh. Cheap probe, only on
+                # the resume path. (A .part exactly == total is kept and the 416
+                # branch below finalizes it.)
+                probed_total, _ = self._probe(url)
+                if probed_total and resume_pos > probed_total:
+                    self._safe_unlink(part)
+                    resume_pos = 0
             if resume_pos:
                 headers["Range"] = f"bytes={resume_pos}-"
                 self.progress.emit(
@@ -600,7 +664,7 @@ class ModelDownloadWorker(QObject):
             except urllib.error.HTTPError as http_err:
                 if http_err.code == 416 and resume_pos:
                     # Range beyond EOF — the .part file is already complete
-                    part.rename(target)
+                    part.replace(target)
                     self.progress.emit("Download complete", 1.0)
                     self.finished.emit(str(target))
                     return
@@ -663,7 +727,7 @@ class ModelDownloadWorker(QObject):
                 )
                 return
 
-            part.rename(target)
+            part.replace(target)
             self.progress.emit("Download complete", 1.0)
             self.finished.emit(str(target))
 
