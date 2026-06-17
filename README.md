@@ -13,6 +13,32 @@
   <img src="https://img.shields.io/badge/platform-Windows%20%7C%20macOS-lightgrey" alt="Platform"/>
 </p>
 
+<p align="center">
+  <a href="https://github.com/GitDonkeyHubbed/qwen3vl-captioner/archive/refs/heads/main.zip">
+    <img src="https://img.shields.io/badge/%E2%AC%87%20DOWNLOAD%20LATEST%20VERSION%20%E2%80%94%20Click%20Here-2EA043?style=for-the-badge&logo=github&logoColor=white" alt="Download Latest Version" height="46"/>
+  </a>
+</p>
+
+<p align="center">
+  <b>New here? Just click the green button above — it downloads the whole app as a <code>.zip</code>.</b>
+</p>
+
+### ✅ Get started in 3 easy steps
+
+1. **Download & unzip** — click the big green button above, then unzip the file anywhere (Desktop is fine).
+2. **Install it (one time):**
+   - **Windows** → double-click **`setup.bat`**
+   - **macOS** → run **`./setup.sh`**
+
+   This automatically installs Python and the GPU engine for you. Just wait for it to finish.
+3. **Run the app:**
+   - **Windows** → double-click **`run.bat`**
+   - **macOS** → run **`./run.sh`**
+
+> 🪟 **Windows note:** you also need the NVIDIA **CUDA Toolkit** for GPU speed. If you don't have it, install it with one command: `winget install Nvidia.CUDA`
+
+<sub>🧰 <b>Power users:</b> prefer a specific tagged release? Grab it from the <a href="https://github.com/GitDonkeyHubbed/qwen3vl-captioner/releases/latest">Releases page</a>.</sub>
+
 ---
 
 ## 🚀 What's New in V1.4.0 — macOS Support
