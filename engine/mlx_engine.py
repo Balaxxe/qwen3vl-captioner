@@ -44,6 +44,54 @@ def is_mlx_model_dir(path: Path) -> bool:
     )
 
 
+def _load_make_sampler():
+    """Return mlx's make_sampler factory, or None on older/missing mlx.
+
+    Newer mlx-lm exposes sampling parameters through a sampler callable; if it
+    isn't importable we fall back to the legacy temperature/top_p kwargs.
+    """
+    try:
+        from mlx_lm.sample_utils import make_sampler
+        return make_sampler
+    except ImportError:
+        # mlx_lm missing or too old to expose make_sampler — use legacy kwargs.
+        # (By the time this runs mlx is already imported, so a non-import error
+        # here would be a genuine problem and should not be masked.)
+        return None
+
+
+def _stream_with_sampling(
+    stream_generate, args, kwargs, temperature, top_p, make_sampler="auto"
+):
+    """Invoke mlx-vlm's stream_generate across a breaking sampling-API change.
+
+    mlx-vlm/mlx-lm dropped the ``temperature``/``top_p`` keyword arguments on
+    ``stream_generate`` in favour of a ``sampler`` callable, and the project
+    pins only ``mlx-vlm>=0.1.0`` (no upper bound) — so a fresh setup.sh install
+    pulls the newer API where the old kwargs raise ``TypeError`` on every
+    caption. Prefer the sampler path; if this build doesn't accept ``sampler``
+    (older 0.1.x), fall back to the legacy kwargs so captioning works on either
+    version.
+    """
+    if make_sampler == "auto":
+        make_sampler = _load_make_sampler()
+    if make_sampler is not None:
+        # Build the sampler OUTSIDE the try: a failure here is a real
+        # make_sampler problem and must not be mistaken for "this build has no
+        # sampler kwarg" (which would wrongly retry the legacy kwargs and crash
+        # on a newer mlx-vlm that removed them).
+        sampler = make_sampler(temp=temperature, top_p=top_p)
+        try:
+            return stream_generate(*args, sampler=sampler, **kwargs)
+        except TypeError as exc:
+            # Only fall back when stream_generate specifically rejects the
+            # `sampler` keyword (older 0.1.x). Any other TypeError is a genuine
+            # error and must propagate.
+            if "sampler" not in str(exc):
+                raise
+    return stream_generate(*args, temperature=temperature, top_p=top_p, **kwargs)
+
+
 class MlxVlmEngine:
     """
     Inference engine for MLX-format Qwen3-VL models via mlx-vlm.
@@ -148,15 +196,16 @@ class MlxVlmEngine:
         start_time = time.perf_counter()
         caption_parts = []
 
-        for chunk in stream_generate(
-            self.model,
-            self.processor,
-            formatted_prompt,
-            image=[str(image_path)],
-            max_tokens=max_tokens,
-            temperature=temperature if temperature > 0 else 0.0,
-            top_p=top_p if temperature > 0 else 1.0,
-        ):
+        temp = temperature if temperature > 0 else 0.0
+        nucleus = top_p if temperature > 0 else 1.0
+        token_stream = _stream_with_sampling(
+            stream_generate,
+            (self.model, self.processor, formatted_prompt),
+            {"image": [str(image_path)], "max_tokens": max_tokens},
+            temp,
+            nucleus,
+        )
+        for chunk in token_stream:
             if cancel_check and cancel_check():
                 break
             text = getattr(chunk, "text", None)
