@@ -38,8 +38,10 @@ jobs:
         run: python -c "from engine.cuda_setup import diagnose; r = diagnose(); print(r); assert r['llama_cpp_installed'], 'wheel not detected'; assert r['toolkit_version'] is None, 'phantom toolkit found'"
 
       - name: Doctor report (informational — runner has no GPU, problems expected)
-        run: python doctor.py
-        continue-on-error: true
+        # doctor.py exits non-zero when it finds problems (always true on a
+        # GPU-less CI runner). Swallow the exit code so this informational step
+        # doesn't surface a misleading "exit code 1" annotation on a passing run.
+        run: python doctor.py || echo "(doctor reported issues — expected on a GPU-less runner)"
 
       - name: Headless app import (exercises the no-CUDA startup path)
         env:
